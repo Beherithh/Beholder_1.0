@@ -97,3 +97,11 @@ class Signal(SQLModel, table=True):
     
     created_at: datetime = Field(default_factory=datetime.utcnow)
     sent_at: Optional[datetime] = None  # Дата отправки в Телеграм. Если None - еще не отправлено.
+
+class AppSettings(SQLModel, table=True):
+    """
+    Таблица настроек приложения (Key-Value).
+    Пример: key="watched_files", value='["c:/data/gate.txt", "c:/data/binance.txt"]'
+    """
+    key: str = Field(primary_key=True)
+    value: str
