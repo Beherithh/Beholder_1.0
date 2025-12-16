@@ -1,107 +1,93 @@
 from datetime import datetime
+from typing import Optional
 from enum import Enum
-from typing import Optional, List
-from sqlmodel import Field, SQLModel, Relationship
+from sqlmodel import SQLModel, Field, Relationship
 
-# --- Описание перечислений (Enums) ---
-# Мы используем классы Enum (наследуемся от str), чтобы ограничить возможные варианты значений.
-# В базе данных это будет храниться просто как текст ("active", "normal"), 
-# но в коде это защищает нас от опечаток и дает подсказки в редакторе.
-
+# Enums
 class MonitoringStatus(str, Enum):
-    """
-    Статус отслеживания файла.
-    Определяет, есть ли пара в ваших списках (файлах) прямо сейчас.
-    """
-    ACTIVE = "active"       # Пара найдена в файлах, мы за ней следим
-    INACTIVE = "inactive"   # Пара исчезла из файлов (Soft Delete - мягкое удаление, чтобы не терять историю)
+    ACTIVE = "active"
+    INACTIVE = "inactive"
 
 class RiskLevel(str, Enum):
-    """
-    Уровень риска (определяется парсером/скрапером).
-    Определяет, есть ли угроза делистинга на бирже.
-    """
-    NORMAL = "normal"               # Всё хорошо
-    RISK_ZONE = "risk_zone"         # Биржа пометила как "рискованно"
-    DELISTING_PLANNED = "delisting_planned" # Официальное объявление о делистинге
+    NORMAL = "normal"
+    RISK_ZONE = "risk_zone"
+    DELISTING_PLANNED = "delisting_planned"
 
 class SignalType(str, Enum):
-    """
-    Типы сигналов для уведомлений.
-    """
-    THRESHOLD_VOLATILITY = "threshold_volatility" # Превышение порога изменения цены
-    DELISTING_WARNING = "delisting_warning"       # Найдена информация о делистинге
-    RISK_WARNING = "risk_warning"                 # Переход в зону риска
+    PRICE_CHANGE = "price_change"
+    DELISTING_WARNING = "delisting_warning"
+    RISK_NEW = "risk_new"
 
-# --- Модели Базы Данных (Таблицы) ---
+# Models
+class AppSettings(SQLModel, table=True):
+    """
+    Таблица для хранения настроек приложения (Key-Value).
+    Пример: "watched_files" -> "['C:/data/file1.txt']"
+    """
+    key: str = Field(primary_key=True)
+    value: str
 
 class MonitoredPair(SQLModel, table=True):
     """
-    Таблица отслеживаемых пар.
-    Хранит информацию о том, какие пары мы мониторим и их текущий статус.
+    Основная таблица отслеживаемых пар.
     """
-    # id - первичный ключ, создается автоматически базой данных (1, 2, 3...)
     id: Optional[int] = Field(default=None, primary_key=True)
+    exchange: str = Field(index=True) # Например: "GATEIO"
+    symbol: str = Field(index=True)   # Например: "BTC/USDT"
     
-    # Индексированные поля для быстрого поиска
-    exchange: str = Field(index=True)           # Название биржи (например, "binance")
-    symbol: str = Field(index=True)             # Торговая пара (например, "BTC/USDT")
+    # Путь к файлу, откуда пришла пара (для синхронизации)
+    source_file: str 
     
-    source_file: str  # Путь к файлу, откуда была загружена эта пара
-    
-    # Статус жизненного цикла (управляется сервисом FileWatcher)
-    # По умолчанию ACTIVE. Если удалить строку из файла, станет INACTIVE.
+    # Статус мониторинга (Soft Delete)
     monitoring_status: MonitoringStatus = Field(default=MonitoringStatus.ACTIVE)
     
-    # Рыночный статус (управляется сервисом Scraper)
-    # Если парсер найдет инфо о делистинге, статус изменится.
+    # Уровень риска (обновляется скрапером)
     risk_level: RiskLevel = Field(default=RiskLevel.NORMAL)
     
-    # Время создания и обновления записи
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
-    
-    # Связь с таблицей свечей (один-ко-многим).
-    # Позволяет получить все свечи пары через `pair.market_data`
-    market_data: List["MarketData"] = Relationship(back_populates="pair")
+    # Связи
+    market_data: list["MarketData"] = Relationship(back_populates="pair")
 
-class MarketData(SQLModel, table=True):
+class DelistingEvent(SQLModel, table=True):
     """
-    Таблица рыночных данных (Свечи).
-    Хранит историю цен (Open, High, Low, Close, Volume).
+    Таблица найденных объявлений о делистинге.
+    Служит "базой знаний" о плохих монетах.
     """
     id: Optional[int] = Field(default=None, primary_key=True)
+    exchange: str = Field(index=True)     # "GATEIO"
+    symbol: str = Field(index=True)       # "1SOS" (Базовая валюта или полный тикер)
     
-    # Внешний ключ (Foreign Key) - ссылка на id в таблице MonitoredPair.
-    # Если MonitoredPair имеет id=5, то тут тоже будет 5.
+    announcement_title: str
+    announcement_url: str
+    found_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    # Флаг, что мы уже обработали этот ивент и создали сигнал (чтобы не спамить)
+    # Хотя логика может быть динамической (сравнивать с active_pairs), 
+    # но можно оставить для истории.
+    
+class MarketData(SQLModel, table=True):
+    """
+    Исторические данные (свечи).
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
     pair_id: int = Field(foreign_key="monitoredpair.id")
     
-    timestamp: datetime = Field(index=True) # Время свечи
+    timestamp: datetime = Field(index=True)
     open: float
     high: float
     low: float
     close: float
     volume: float
 
-    # Обратная связь, чтобы от свечи можно было узнать её пару (market_data.pair)
-    pair: Optional[MonitoredPair] = Relationship(back_populates="market_data")
+    pair: MonitoredPair = Relationship(back_populates="market_data")
 
 class Signal(SQLModel, table=True):
     """
-    Таблица сигналов и уведомлений.
-    Хранит историю всех сгенерированных алертов.
+    Сгенерированные сигналы (алерты).
     """
     id: Optional[int] = Field(default=None, primary_key=True)
-    type: SignalType        # Тип уведомления (из списка выше)
-    raw_message: str        # Текст сообщения
-    
     created_at: datetime = Field(default_factory=datetime.utcnow)
-    sent_at: Optional[datetime] = None  # Дата отправки в Телеграм. Если None - еще не отправлено.
-
-class AppSettings(SQLModel, table=True):
-    """
-    Таблица настроек приложения (Key-Value).
-    Пример: key="watched_files", value='["c:/data/gate.txt", "c:/data/binance.txt"]'
-    """
-    key: str = Field(primary_key=True)
-    value: str
+    
+    type: SignalType
+    raw_message: str # Текст сообщения для Telegram
+    
+    is_sent: bool = Field(default=False) # Отправлено ли в Telegram

@@ -21,6 +21,12 @@ class FileWatcherService:
         """
         self.session_factory = session_factory
 
+    # Маппинг названий из файлов в ID для CCXT
+    EXCHANGE_MAPPING = {
+        "GATE": "gateio",
+        # Сюда можно добавлять другие биржи по мере необходимости
+    }
+
     async def _read_files(self, file_paths: List[str]) -> Set[Tuple[str, str, str]]:
         """
         Приватный метод. Читает все файлы JSON и собирает уникальные пары.
@@ -46,7 +52,10 @@ class FileWatcherService:
             match = re.search(r'(?:^\d+_)?(.+?)_instruments_([^\.]+)', filename)
             
             if match:
-                exchange_name = match.group(1).upper()
+                raw_exchange = match.group(1).upper()
+                # Нормализация имени биржи (например GATE -> gateio)
+                exchange_name = self.EXCHANGE_MAPPING.get(raw_exchange, raw_exchange)
+                
                 quote_currency = match.group(2).upper() # Например "USDT"
             else:
                 logger.warning(f"Не удалось извлечь название биржи и валюты из имени файла: {filename}. Используем defaults.")
