@@ -23,22 +23,25 @@ class FileWatcherService:
 
     # Маппинг названий из файлов в ID для CCXT
     EXCHANGE_MAPPING = {
-        "GATE": "gateio",
+        "GATE": "GATEIO",
         # Сюда можно добавлять другие биржи по мере необходимости
     }
 
-    async def _read_files(self, file_paths: List[str]) -> Set[Tuple[str, str, str]]:
+    async def _read_files(self, file_items: List[Dict[str, str]]) -> Set[Tuple[str, str, str, str]]:
         """
         Приватный метод. Читает все файлы JSON и собирает уникальные пары.
-        Формат имени файла: "Gate_instruments_USDT.txt" или "4_Gate_instruments_USDT.txt".
-        Формат содержимого: JSON {"listHelper": [{"symbol": "BTC_USDT", ...}, ...]}
         
-        Возвращает множество кортежей: {(exchange, symbol, source_file_path), ...}
+        :param file_items: Список словарей [{'path': '...', 'name': '...'}, ...]
+        :return: Множество кортежей: {(exchange, symbol, source_file_path, source_label), ...}
         """
-        
         found_pairs = set()
 
-        for path_str in file_paths:
+        for item in file_items:
+            path_str = item.get("path")
+            label = item.get("name", "Unknown")
+            
+            if not path_str: continue
+
             path = Path(path_str)
             if not path.exists():
                 logger.warning(f"Файл не найден: {path_str}")
@@ -46,19 +49,21 @@ class FileWatcherService:
 
             # 1. Парсинг имени файла
             filename = path.name
-            
+
             # Регулярка для извлечения биржи и валюты котирования (например, USDT).
-            # Имя: "Gate_instruments_USDT.txt" -> Exchange: GATE, Quote: USDT
-            match = re.search(r'(?:^\d+_)?(.+?)_instruments_([^\.]+)', filename)
+            # Поддерживает форматы:
+            # - Gate_instruments_USDT
+            # - 2_Gate_instruments_USDT
+            # - Gate_ANYTHING_USDT.json
+            match = re.search(r'(?:^\d+_)?([^_]+)_.+_([^_]+)$', filename)
             
             if match:
                 raw_exchange = match.group(1).upper()
                 # Нормализация имени биржи (например GATE -> gateio)
                 exchange_name = self.EXCHANGE_MAPPING.get(raw_exchange, raw_exchange)
-                
-                quote_currency = match.group(2).upper() # Например "USDT"
+                quote_currency = match.group(2).upper()
             else:
-                logger.warning(f"Не удалось извлечь название биржи и валюты из имени файла: {filename}. Используем defaults.")
+                logger.warning(f"Не удалось извлечь данные из имени: {filename}. Defaults.")
                 exchange_name = "UNKNOWN"
                 quote_currency = ""
 
@@ -71,11 +76,11 @@ class FileWatcherService:
                 items = data.get("listHelper", [])
                 
                 if not items:
-                    logger.warning(f"В файле {filename} не найден ключ 'listHelper' или он пуст.")
+                    logger.warning(f"В файле {filename} нет ключа 'listHelper'.")
                     continue
 
-                for item in items:
-                    raw_symbol = item.get("symbol", "")
+                for pair_item in items:
+                    raw_symbol = pair_item.get("symbol", "")
                     if raw_symbol:
                         # Нормализация символа
                         # 1. Если есть разделитель "_" -> меняем на "/" (BTC_USDT -> BTC/USDT)
@@ -89,73 +94,94 @@ class FileWatcherService:
                         else:
                             normalized_symbol = raw_symbol.upper()
                         
-                        found_pairs.add((exchange_name, normalized_symbol, path_str))
+                        found_pairs.add((exchange_name, normalized_symbol, path_str, label))
                     
             except json.JSONDecodeError:
-                logger.error(f"Ошибка парсинга JSON в файле {path_str}")
+                logger.error(f"Ошибка парсинга JSON в {path_str}")
             except Exception as e:
-                logger.error(f"Ошибка при чтении файла {path_str}: {e}")
+                logger.error(f"Ошибка чтения {path_str}: {e}")
 
         logger.info(f"Всего найдено пар в файлах: {len(found_pairs)}")
         return found_pairs
 
-    async def sync_files(self, file_paths: List[str]) -> Dict[str, int]:
+    async def sync_files(self, file_dict_list: List[Dict[str, str]]) -> Dict[str, int]:
         """
         Основной метод синхронизации.
-        1. Читает файлы.
-        2. Загружает текущее состояние базы.
-        3. Добавляет новые, обновляет существующие, помечает удаленные как INACTIVE.
+        :param file_dict_list: [{'path': 'C:/...', 'name': 'Gate 1'}, ...]
         """
         stats = {"added": 0, "reactivated": 0, "archived": 0, "unchanged": 0}
         
-        # 1. Читаем файлы
-        file_pairs_set = await self._read_files(file_paths)
-        # Создаем словарь для быстрого поиска: (exchange, symbol) -> source_file
-        # Внимание: если пара есть в двух файлах, победит последний. Это упрощение.
-        incoming_pairs_map = { (ex, sym): src for (ex, sym, src) in file_pairs_set }
+        # 1. Читаем файлы (передаем список словарей)
+        file_pairs_set = await self._read_files(file_dict_list)
+        
+        # Агрегация: (exchange, symbol) -> {labels: set(), files: set()}
+        aggregated_map = {}
+        
+        for (ex, sym, src, lbl) in file_pairs_set:
+            key = (ex, sym)
+            if key not in aggregated_map:
+                aggregated_map[key] = {"labels": set(), "files": set()}
+            
+            aggregated_map[key]["labels"].add(lbl)
+            aggregated_map[key]["files"].add(src)
 
-        async with self.session_factory() as session:  # type: AsyncSession
-            # 2. Получаем все пары из БД (и активные, и неактивные)
+        async with self.session_factory() as session:
             statement = select(MonitoredPair)
             result = await session.execute(statement)
             db_pairs = result.scalars().all()
             
-            # Превращаем в словарь: (exchange, symbol) -> MonitoredPair объект
             db_pairs_map = { (p.exchange, p.symbol): p for p in db_pairs }
 
-            # 3. Обработка ВХОДЯЩИХ (Новые или Реактивация)
-            for (exchange, symbol), source_file in incoming_pairs_map.items():
+            # 3. Обработка ВХОДЯЩИХ
+            for (exchange, symbol), data in aggregated_map.items():
+                # Формируем JSON строку меток (сортируем для стабильности)
+                labels_list = sorted(list(data["labels"]))
+                labels_json = json.dumps(labels_list, ensure_ascii=False)
+                
+                # Исходный файл берем последний (или первый), так как поле source_file строковое.
+                # Можно хранить тоже JSON, но пока user просил только идентификацию списков.
+                # Возьмем первый попавшийся для проформы.
+                primary_file = list(data["files"])[0] 
+
                 if (exchange, symbol) in db_pairs_map:
-                    # Пара уже есть в базе
+                    # Обновление существующей
                     existing_pair = db_pairs_map[(exchange, symbol)]
                     
+                    # Проверяем изменения
+                    changes_needed = False
+                    
                     if existing_pair.monitoring_status == MonitoringStatus.INACTIVE:
-                        # Если была удалена, а теперь вернулась -> ВОССТАНАВЛИВАЕМ
                         existing_pair.monitoring_status = MonitoringStatus.ACTIVE
-                        existing_pair.source_file = source_file # Обновляем путь файла, если изменился
                         stats["reactivated"] += 1
+                        changes_needed = True
                     else:
-                        # Она и так активна
                         stats["unchanged"] += 1
-                        # Обновим source_file на всякий случай, если переместили в другой файл
-                        if existing_pair.source_file != source_file:
-                            existing_pair.source_file = source_file
+
+                    # Обновляем метаданные
+                    if existing_pair.source_label != labels_json:
+                        existing_pair.source_label = labels_json
+                        changes_needed = True
+                    
+                    if existing_pair.source_file != primary_file:
+                        existing_pair.source_file = primary_file
+                        changes_needed = True # Не совсем критично, но обновим
+                        
                 else:
-                    # Пары нет в базе -> СОЗДАЕМ
+                    # Создание новой
                     new_pair = MonitoredPair(
                         exchange=exchange,
                         symbol=symbol,
-                        source_file=source_file,
+                        source_file=primary_file,
+                        source_label=labels_json,
                         monitoring_status=MonitoringStatus.ACTIVE,
                         risk_level=RiskLevel.NORMAL
                     )
                     session.add(new_pair)
                     stats["added"] += 1
 
-            # 4. Обработка ИСЧЕЗНУВШИХ (Soft Delete)
-            # Проходим по тем, кто В БАЗЕ, но НЕТ во входящих
+            # 4. Обработка ИСЧЕЗНУВШИХ
             for (exchange, symbol), db_pair in db_pairs_map.items():
-                if (exchange, symbol) not in incoming_pairs_map:
+                if (exchange, symbol) not in aggregated_map:
                     if db_pair.monitoring_status == MonitoringStatus.ACTIVE:
                         # Была активна, но исчезла из файлов -> УДАЛЯЕМ (Мягко)
                         db_pair.monitoring_status = MonitoringStatus.INACTIVE

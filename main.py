@@ -1,20 +1,20 @@
 from nicegui import ui, app
 from database.core import init_db
 from ui.pages.settings import settings_page # Register page
+from ui.pages.logs import logs_page # Register Logs page
+from ui.layout import create_header
+from services.system import init_services, get_scheduler
 
 @ui.page('/')
 def main_page():
-    with ui.header().classes('bg-gray-800 text-white p-4 flex items-center gap-4'):
-        ui.label('Beholder').classes('text-xl font-bold')
-        ui.link('Дашборд', '/').classes('text-white no-underline hover:text-gray-300')
-        ui.link('Настройки', '/settings').classes('text-white no-underline hover:text-gray-300')
+    create_header()
 
     with ui.column().classes('w-full items-center mt-10'):
         ui.label('Добро пожаловать в Beholder').classes('text-4xl font-bold text-gray-700')
         ui.label('Перейдите в настройки для добавления файлов').classes('text-gray-500 mt-2')
         ui.button('Перейти в Настройки', on_click=lambda: ui.open('/settings')).classes('mt-4 bg-blue-600')
 
-from services.system import init_services, get_scheduler
+
 
 async def startup():
     print("Инициализация Базы Данных...")
@@ -22,6 +22,24 @@ async def startup():
     
     print("Запуск сервисов...")
     init_services()
+    
+    # Инициализация перехвата логов для UI
+    from ui.pages.logs import init_logging
+    init_logging()
+
+    # Добавляем оповещения (Toasts) для Warning/Error
+    from loguru import logger
+    def ui_notification_sink(message):
+        record = message.record
+        if record["level"].name in ("WARNING", "ERROR", "CRITICAL"):
+            try:
+                # Пытаемся отправить уведомление в текущий контекст UI
+                # Если вызвано из фоновой задачи без контекста, будет pass
+                ui.notify(record["message"], type='warning' if record["level"].name == "WARNING" else 'negative', position='bottom-right')
+            except:
+                pass
+    
+    logger.add(ui_notification_sink)
     
     # Запуск планировщика
     scheduler = get_scheduler()

@@ -10,13 +10,21 @@ class MonitoringStatus(str, Enum):
 
 class RiskLevel(str, Enum):
     NORMAL = "normal"
+    CROSS_RISK = "cross_risk"
+    CROSS_DELISTING = "cross_delisting"
     RISK_ZONE = "risk_zone"
     DELISTING_PLANNED = "delisting_planned"
+
+    @property
+    def priority(self) -> int:
+        """Возвращает числовой приоритет для сравнения (0 = низкий, 4 = высокий)."""
+        order = [RiskLevel.NORMAL, RiskLevel.CROSS_RISK, RiskLevel.CROSS_DELISTING, RiskLevel.RISK_ZONE, RiskLevel.DELISTING_PLANNED]
+        return order.index(self)
 
 class SignalType(str, Enum):
     PRICE_CHANGE = "price_change"
     DELISTING_WARNING = "delisting_warning"
-    RISK_NEW = "risk_new"
+    ST_WARNING = "st_warning"
 
 # Models
 class AppSettings(SQLModel, table=True):
@@ -37,6 +45,9 @@ class MonitoredPair(SQLModel, table=True):
     
     # Путь к файлу, откуда пришла пара (для синхронизации)
     source_file: str 
+    
+    # Метка источника (алиас файла, заданный пользователем)
+    source_label: Optional[str] = Field(default=None) 
     
     # Статус мониторинга (Soft Delete)
     monitoring_status: MonitoringStatus = Field(default=MonitoringStatus.ACTIVE)
