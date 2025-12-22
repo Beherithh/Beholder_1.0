@@ -11,7 +11,10 @@ from selenium.webdriver.chrome.service import Service as ChromeService
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.options import Options
 
-from database.models import MonitoredPair, Signal, SignalType, RiskLevel, AppSettings, DelistingEvent
+from database.models import (
+    MonitoredPair, Signal, SignalType, RiskLevel, AppSettings, DelistingEvent,
+    DelistingEventType
+)
 from database.core import get_session
 from sqlalchemy.ext.asyncio import AsyncSession
 import httpx # Still needed for API check
@@ -26,14 +29,53 @@ class ScraperService:
     
     DELIST_TRIGGER_KEYWORDS = {"delist", "oppos", "remov", "offline", "risk", "suspend"}
     ST_TRIGGER_KEYWORDS = {"st_tag", "ST Warning", "Assessment Zone"}
+    IGNORE_KEYWORDS = {"convert", "futures"}
     
-    # Регулярка для поиска ПАР в тексте (например: "ABC_USDT", "ABC/ETH")
-    # Это гораздо надежнее, чем искать просто "ABC"
+    # Регулярка для поиска ПАР в тексте (например: "ABC_USDT", "ABC/ETH", "ABCUSDT", "ICE")
+    # Quote опциональна, чтобы захватывать и одиночные символы типа "ICE"
     # Исключены слова содержащие только цифры - (?![0-9]+\b)
-    PAIR_PATTERN = re.compile(r'\b(?![0-9]+\b)([A-Z0-9]{1,10})[-_/\.]?(USDT|BTC|ETH|BUSD|BNB|SOL)?\b')
+    QUOTE_CURRENCIES = ("USDT", "BTC", "ETH", "BUSD", "BNB", "SOL", "USDC")
+    PAIR_PATTERN = re.compile(
+        r'\b(?![0-9]+\b)([A-Z0-9]{1,11})[-_/\.]?(USDT|BTC|ETH|BUSD|BNB|SOL|USDC)?\b',
+        re.IGNORECASE
+    )
+
+    # API endpoints for ST/Risk checks
+    API_SOURCES = [
+        {
+            "name": "GATEIO",
+            "url": "https://api.gateio.ws/api/v4/spot/currency_pairs",
+            "symbol_key": "id",           # Field for symbol (e.g., "BTC_USDT")
+            "st_key": "st_tag",           # Field for ST status (True/False or string)
+        },
+        {
+            "name": "MEXC",
+            "url": "https://api.mexc.com/api/v3/exchangeInfo",
+            "symbol_key": "symbol",       # Field for symbol "BTCUSDT"
+            "st_key": "st",               # TRUE = ST tag assigned (risk)
+        },
+    ]
 
     def __init__(self, session_factory):
         self.session_factory = session_factory
+    
+    async def _update_pair_risk(self, session, pair: MonitoredPair, new_risk: RiskLevel, 
+                                 signal_type: SignalType, msg: str) -> bool:
+        """
+        Универсальный метод обновления риска пары.
+        Использует RiskLevel.priority для предотвращения понижения.
+        Returns True if signal was created.
+        """
+        if new_risk.priority > pair.risk_level.priority:
+            pair.risk_level = new_risk
+            session.add(pair)
+            
+            # Check for duplicate signal
+            sig_check = select(Signal).where(Signal.type == signal_type, Signal.raw_message == msg)
+            if not (await session.execute(sig_check)).first():
+                session.add(Signal(type=signal_type, raw_message=msg))
+                return True
+        return False
     
     async def _fetch_html(self, url: str) -> str:
         """
@@ -99,7 +141,15 @@ class ScraperService:
             
             result = set()
             for base, quote in found_pairs:
-                result.add(base)
+                base_upper = base.upper()
+                # Постобработка: если quote не была захвачена отдельно, 
+                # проверяем не застряла ли она в конце base (например ICEUSDT)
+                if not quote:
+                    for q in self.QUOTE_CURRENCIES:
+                        if base_upper.endswith(q) and len(base_upper) > len(q):
+                            base_upper = base_upper[:-len(q)]
+                            break
+                result.add(base_upper)
             
             return result
         except Exception as e:
@@ -158,6 +208,10 @@ class ScraperService:
                             else:
                                 continue
                                 
+                            # Пропускаем саму главную страницу списка, чтобы не скрапить всё подряд
+                            if full_url.rstrip('/') == source["url"].rstrip('/'):
+                                continue
+                                
                             title = link.get_text(strip=True)
                             if full_url not in unique_links and title:
                                 unique_links[full_url] = title
@@ -168,13 +222,24 @@ class ScraperService:
                             # 1. Проверяем заголовок на наличие триггеров
                             title_lower = title.lower()
                             
-                            # Проверяем на ключевые слова (Delisting)
-                            is_delist = any(k in title_lower for k in self.DELIST_TRIGGER_KEYWORDS)
-                            # Можно добавить логику для ST_TRIGGER_KEYWORDS, если нужно
+                            # Проверяем на исключаемые слова (convert, futures)
+                            if any(k in title_lower for k in self.IGNORE_KEYWORDS):
+                                continue
+                                
+                            # Проверяем на ключевые слова (Delisting или ST)
+                            is_relevant = any(k in title_lower for k in self.DELIST_TRIGGER_KEYWORDS) or \
+                                          any(k.lower() in title_lower for k in self.ST_TRIGGER_KEYWORDS)
                             
-                            if not is_delist:
+                            if not is_relevant:
                                 continue 
                                 
+                            # 1.1 Пропускаем, если этот URL уже был обработан ранее
+                            stmt_url = select(DelistingEvent).where(DelistingEvent.announcement_url == url)
+                            existing_url = (await session.execute(stmt_url)).first()
+                            if existing_url:
+                                # logger.info(f"[{ex_name}] Skipping already processed article: {title}")
+                                continue
+
                             logger.info(f"[{ex_name}] Analyzing article: {title}")
                             
                             # 2. Заходим внутрь (Deep Scan)
@@ -184,6 +249,9 @@ class ScraperService:
                                 logger.warning(f"[{ex_name}] '{title}' - Pairs not found.")
                                 continue
                                 
+                            # 2.1 Определяем тип события для сохранения в БД
+                            event_type = DelistingEventType.DELISTING if is_relevant and any(k in title_lower for k in self.DELIST_TRIGGER_KEYWORDS) else DelistingEventType.ST
+                            
                             # 3. Сохраняем найденное
                             for symbol in affected_tokens:
                                 stmt = select(DelistingEvent).where(
@@ -198,147 +266,246 @@ class ScraperService:
                                         exchange=ex_name,
                                         symbol=symbol,
                                         announcement_title=title,
-                                        announcement_url=url
+                                        announcement_url=url,
+                                        type=event_type
                                     )
                                     session.add(event)
                                     new_events_count += 1
-                                    logger.info(f"Found event: {symbol} in {url}")
+                                    logger.info(f"Found event ({event_type}): {symbol} in {url}")
 
                     except Exception as ex_err:
                         logger.error(f"Error checking {ex_name}: {ex_err}")
-
                 if new_events_count > 0:
                     await session.commit()
                     logger.success(f"Добавлено {new_events_count} новых записей о делистинге.")
                 
-                # 4. Матчинг с активными парами (Generic logic for all exchanges)
-                # Получаем все активные пары независимо от биржи (или можно фильтровать)
-                active_pairs_result = await session.execute(select(MonitoredPair).where(MonitoredPair.monitoring_status == "active"))
-                active_pairs = active_pairs_result.scalars().all()
-                
-                signals_created = 0
-                
-                # Pre-fetch events grouping by (exchange, symbol) optimized? 
-                # Пока перебором, так как событий немного.
-                
-                for pair in active_pairs:
-                    base_currency = pair.symbol.split('/')[0]
-                    
-                    # Поиск доказательств (Cross-Exchange)
-                    # Ищем события делистинга/ST для этой монеты на ЛЮБОЙ бирже
-                    stmt = select(DelistingEvent).where(
-                        DelistingEvent.symbol == base_currency
-                    )
-                    events = (await session.execute(stmt)).scalars().all()
-                    
-                    for evidence in events:
-                        title_lower = evidence.announcement_title.lower()
-                        
-                        # 1. Определяем тип события
-                        is_delist = any(k in title_lower for k in self.DELIST_TRIGGER_KEYWORDS)
-                        is_st = any(k in title_lower for k in self.ST_TRIGGER_KEYWORDS)
-                        
-                        # 2. Определяем тип источника (Direct vs Cross)
-                        is_direct = (evidence.exchange.upper() == pair.exchange.upper())
-                        
-                        current_risk = pair.risk_level
-                        new_risk = None
-                        signal_type = None
-                        msg_prefix = ""
-                        
-                        # Логика приоритетов (Highest wins)
-                        # Hierarchy: DELISTING_PLANNED > RISK_ZONE > CROSS_DELISTING > CROSS_RISK > NORMAL
-                        
-                        if is_delist:
-                            if is_direct:
-                                new_risk = RiskLevel.DELISTING_PLANNED
-                                signal_type = SignalType.DELISTING_WARNING
-                                msg_prefix = "⚠️ DELISTING WARNING!"
-                            else:
-                                new_risk = RiskLevel.CROSS_DELISTING
-                                signal_type = SignalType.DELISTING_WARNING # Use generic or create new type
-                                msg_prefix = "⚠️ CROSS-EXCHANGE DELISTING!"
-                        
-                        elif is_st:
-                            if is_direct:
-                                new_risk = RiskLevel.RISK_ZONE
-                                signal_type = SignalType.ST_WARNING
-                                msg_prefix = "⚠️ ST WARNING!"
-                            else:
-                                new_risk = RiskLevel.CROSS_RISK
-                                signal_type = SignalType.ST_WARNING
-                                msg_prefix = "⚠️ CROSS-EXCHANGE RISK!"
-                        else:
-                            continue # Unknown event type
-
-                        # Апгрейдим риск только если новый приоритет выше текущего
-                        if new_risk and new_risk.priority > current_risk.priority:
-                            pair.risk_level = new_risk
-                            session.add(pair)
-                            
-                            # Генерируем сигнал
-                            msg = f"{msg_prefix} Pair: {pair.symbol} ({pair.exchange}). Source: {evidence.exchange}. Article: {evidence.announcement_title}"
-                            
-                            sig_check = select(Signal).where(
-                                Signal.type == signal_type,
-                                Signal.raw_message == msg
-                            )
-                            if not (await session.execute(sig_check)).first():
-                                session.add(Signal(type=signal_type, raw_message=msg))
-                                signals_created += 1
-                        
-                        # Если риск не повышаем, но сигнал важный (например Cross-Delisting), может все равно стоит отправить алерт? 
-                        # Пока оставим логику "только при повышении риска или если такого сигнала не было".
-                        # Но выше проверка на дубликат сигнала уже есть.
-                        # Если, например, у нас уже DELISTING_PLANNED, а пришел CROSS_DELISTING -> мы не меняем статус.
-                        # Но алерт можно было бы и послать.
-                        # Сейчас пошлем алерт только если повысили статус ИЛИ (можно переделать).
-                        # Оставим пока strict state updates.
-
-                if signals_created > 0:
-                    await session.commit()
-                    logger.warning(f"Сгенерировано {signals_created} алертов риска!")
+                # 4. Матчинг с активными парами (вынесено в отдельный метод)
+                await self.match_monitored_pairs_with_events(session)
 
         except Exception as e:
             logger.error(f"Global Scraper Error: {e}")
 
+    async def match_monitored_pairs_with_events(self, session: AsyncSession):
+        """
+        Сравнивает все активные отслеживаемые пары с историей событий в БД.
+        Этот метод работает быстро, так как не использует внешние запросы (Selenium/API).
+        """
+        logger.info("Матчинг активных пар с историей событий в БД...")
+        
+        active_pairs_result = await session.execute(select(MonitoredPair).where(MonitoredPair.monitoring_status == "active"))
+        active_pairs = active_pairs_result.scalars().all()
+        
+        if not active_pairs:
+            return
+
+        # Собираем все базовые валюты для запроса
+        bases = list({p.symbol.split('/')[0] for p in active_pairs})
+                
+                # SQLite limit is usually 999 vars, splitting chunks if necessary or just fetch all recent?
+                # Для надежности и простоты, если база небольшая, сделаем IN. Если монет тысячи - надо чанками.
+                # Пока предполагаем разумное количество (<500).
+        
+        # Строим карту {base_currency: [events]}
+        events_map = {}
+        if bases:
+            chunk_size = 500
+            for i in range(0, len(bases), chunk_size):
+                chunk = bases[i:i + chunk_size]
+                stmt = select(DelistingEvent).where(DelistingEvent.symbol.in_(chunk))
+                chunk_events = (await session.execute(stmt)).scalars().all()
+                
+                for ev in chunk_events:
+                    if ev.symbol not in events_map:
+                        events_map[ev.symbol] = []
+                    events_map[ev.symbol].append(ev)
+
+        signals_created = 0
+        
+        for pair in active_pairs:
+            base_currency = pair.symbol.split('/')[0]
+            events = events_map.get(base_currency, [])
+            
+            for evidence in events:
+                # 1. Определяем тип события и источник (Direct vs Cross)
+                is_direct = (evidence.exchange.upper() == pair.exchange.upper())
+                
+                new_risk = None
+                signal_type = None
+                msg_prefix = ""
+                
+                # Логика приоритетов на основе поля type из БД
+                if evidence.type == DelistingEventType.DELISTING:
+                    if is_direct:
+                        new_risk = RiskLevel.DELISTING_PLANNED
+                        signal_type = SignalType.DELISTING_WARNING
+                        msg_prefix = "⚠️ DELISTING WARNING!"
+                    else:
+                        new_risk = RiskLevel.CROSS_DELISTING
+                        signal_type = SignalType.DELISTING_WARNING
+                        msg_prefix = "⚠️ CROSS-EXCHANGE DELISTING!"
+                
+                elif evidence.type == DelistingEventType.ST:
+                    if is_direct:
+                        new_risk = RiskLevel.RISK_ZONE
+                        signal_type = SignalType.ST_WARNING
+                        msg_prefix = "⚠️ ST WARNING!"
+                    else:
+                        new_risk = RiskLevel.CROSS_RISK
+                        signal_type = SignalType.ST_WARNING
+                        msg_prefix = "⚠️ CROSS-EXCHANGE RISK!"
+                
+                # Используем универсальный метод обновления риска
+                if new_risk:
+                    msg = f"{msg_prefix} Pair: {pair.symbol} ({pair.exchange}). Source: {evidence.exchange}. Article: {evidence.announcement_title}"
+                    if await self._update_pair_risk(session, pair, new_risk, signal_type, msg):
+                        signals_created += 1
+
+        if signals_created > 0:
+            await session.commit()
+            logger.warning(f"Матчинг завершен: сгенерировано {signals_created} алертов риска!")
+        else:
+            logger.info("Матчинг завершен: новых алертов не найдено.")
+
     async def check_api_risks(self):
         """
-        Проверка API на статус 'st' (Risk) или 'delisting'.
-        GET https://api.gateio.ws/api/v4/spot/currency_pairs
+        Проверка API бирж на статус ST/Risk.
+        Унифицированный метод + Кросс-Алерты + Auto-Recovery.
         """
-        url = "https://api.gateio.ws/api/v4/spot/currency_pairs"
-        logger.info("Проверка API статус 'trade_status'...")
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(url)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    # data - список объектов
-                    # { "id": "ETH_USDT", "base": "ETH", "quote": "USDT", "trade_status": "tradable", "sell_start": ... }
-                    
-                    async with self.session_factory() as session:
-                        # Загружаем наши пары
-                        db_pairs = (await session.execute(select(MonitoredPair).where(MonitoredPair.monitoring_status == "active"))).scalars().all()
-                        db_map = {p.symbol.replace('/', '_'): p for p in db_pairs} # BTC/USDT -> BTC_USDT для маппинга с API
-                        
-                        signals = 0
-                        for item in data:
-                            pair_code = item.get("id")
-                            trade_status = item.get("trade_status") # tradable, untradable, sellable
-                            
-                            if pair_code in db_map:
-                                pair = db_map[pair_code]
-                                # Логика определения риска по статусу API
-                                if trade_status == 'untradable' and pair.risk_level != RiskLevel.DELISTING_PLANNED:
-                                    pair.risk_level = RiskLevel.DELISTING_PLANNED
-                                    session.add(pair)
-                                    session.add(Signal(type=SignalType.ST_WARNING, raw_message=f"API Status Change: {pair.symbol} is UNTRADABLE"))
-                                    signals += 1
-                                    
-                        if signals > 0:
-                            await session.commit()
-                            logger.info(f"Обновлено статусов из API: {signals}")
+        logger.info("Проверка API на ST/Risk статусы (Direct & Cross)...")
+        
+        async with self.session_factory() as session:
+            # 1. Загружаем активные пары
+            db_pairs = (await session.execute(
+                select(MonitoredPair).where(MonitoredPair.monitoring_status == "active")
+            )).scalars().all()
+            
+            if not db_pairs:
+                return
 
-        except Exception as e:
-            logger.error(f"Ошибка API check: {e}")
+            signals_created = 0 # Используем как флаг изменений (не только сигналы, но и recovery)
+            
+            # 2. Собираем данные со всех API в единую структуру
+            # all_api_data = { "GATEIO": {"BTC/USDT": {...data...}, ...}, "MEXC": {...} }
+            all_api_data = {}
+            quote_currencies = {"USDT", "BTC", "ETH", "BUSD", "BNB", "SOL", "USDC"}
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                for source in self.API_SOURCES:
+                    ex_name = source["name"]
+                    logger.info(f"[{ex_name}] Fetching API: {source['url']}")
+                    all_api_data[ex_name] = {}
+                    
+                    try:
+                        resp = await client.get(source["url"])
+                        if resp.status_code != 200:
+                            logger.warning(f"[{ex_name}] API returned {resp.status_code}")
+                            continue
+                            
+                        data = resp.json()
+                        
+                        # Normalize format - MEXC returns {"symbols": [...]} while Gate returns [...]
+                        if isinstance(data, dict) and "symbols" in data:
+                            items = data["symbols"]
+                        elif isinstance(data, list):
+                            items = data
+                        else:
+                            logger.warning(f"[{ex_name}] Unexpected API response format")
+                            continue
+                        
+                        # Build Normalize Map
+                        for item in items:
+                            symbol_key = source.get("symbol_key", "symbol")
+                            raw_symbol = item.get(symbol_key, "")
+                            if not raw_symbol:
+                                continue
+                            
+                            # Нормализуем к формату БД: BTC/USDT
+                            if "_" in raw_symbol:
+                                # BTC_USDT -> BTC/USDT
+                                normalized = raw_symbol.replace("_", "/")
+                            elif "/" in raw_symbol:
+                                # Уже в нужном формате
+                                normalized = raw_symbol
+                            else:
+                                # BTCUSDT -> BTC/USDT (ищем известную quote currency в конце)
+                                normalized = raw_symbol
+                                for quote in quote_currencies:
+                                    if raw_symbol.endswith(quote) and len(raw_symbol) > len(quote):
+                                        base = raw_symbol[:-len(quote)]
+                                        normalized = f"{base}/{quote}"
+                                        break
+                            
+                            all_api_data[ex_name][normalized.upper()] = item
+                            
+                    except Exception as api_err:
+                        logger.error(f"[{ex_name}] API Fetch Error: {api_err}")
+
+            # 3. Анализируем данные API
+            for pair in db_pairs:
+                current_ex = pair.exchange.upper()
+                pair_symbol = pair.symbol.upper()
+                base_currency = pair_symbol.split('/')[0]
+                
+                # --- A. Populating DelistingEvent from API (ST status) ---
+                # Проверяем все биржи на наличие ST тега для нашей монеты
+                for ex_name, ex_data in all_api_data.items():
+                    api_item = ex_data.get(pair_symbol)
+                    if api_item:
+                        source_cfg = next((s for s in self.API_SOURCES if s["name"] == ex_name), {})
+                        st_key = source_cfg.get("st_key", "st")
+                        st_value = api_item.get(st_key)
+                        
+                        is_risk = (st_value == True or str(st_value).lower() == "true" or st_value == 1 or st_value == "1")
+                        
+                        if is_risk:
+                            # Сохраняем ивент в БД (если еще нет)
+                            # Это создаст базу для метода match_monitored_pairs_with_events
+                            stmt = select(DelistingEvent).where(
+                                DelistingEvent.exchange == ex_name,
+                                DelistingEvent.symbol == base_currency,
+                                DelistingEvent.announcement_url == source_cfg.get("url", "API"),
+                                DelistingEvent.type == DelistingEventType.ST
+                            )
+                            if not (await session.execute(stmt)).first():
+                                new_event = DelistingEvent(
+                                    exchange=ex_name,
+                                    symbol=base_currency,
+                                    announcement_title="API Risk Status",
+                                    announcement_url=source_cfg.get("url", "API"),
+                                    type=DelistingEventType.ST
+                                )
+                                session.add(new_event)
+                                logger.info(f"[{ex_name}] New ST status detected for {base_currency}")
+
+                # --- B. Recovery Logic (Unique to API) ---
+                # Если пара есть на родной бирже, и статус ST=False, и текущий риск RISK_ZONE -> снимаем
+                native_data = all_api_data.get(current_ex, {}).get(pair_symbol)
+                if native_data and pair.risk_level == RiskLevel.RISK_ZONE:
+                    source_cfg = next((s for s in self.API_SOURCES if s["name"] == current_ex), {})
+                    st_key = source_cfg.get("st_key", "st")
+                    st_value = native_data.get(st_key)
+                    is_risk = (st_value == True or str(st_value).lower() == "true" or st_value == 1 or st_value == "1")
+                    
+                    if not is_risk:
+                        pair.risk_level = RiskLevel.NORMAL
+                        session.add(pair)
+                        signals_created += 1 # Trigger commit/log
+                        logger.info(f"[{current_ex}] {pair.symbol} - ST Cleared (Recovery).")
+
+            # 4. Вызываем единый матчер для выставления алертов (Direct & Cross)
+            # Он увидит новые записи в DelistingEvent и обновит риски/создаст сигналы.
+            await session.commit() # Сначала сохраняем новые DelistingEvent
+            await self.match_monitored_pairs_with_events(session)
+            
+            if signals_created > 0:
+                await session.commit()
+
+    async def check_all_risks(self):
+        """
+        Вызывает все проверки риска: блог и API.
+        """
+        logger.info("=== Запуск полной проверки рисков Delistings + ST ===")
+        await self.check_delistings_blog()
+        await self.check_api_risks()
+        logger.info("=== Полная проверка рисков Delistings + ST завершена ===")
+

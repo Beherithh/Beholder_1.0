@@ -9,6 +9,7 @@ from sqlmodel import select, delete
 from database.core import get_session
 from database.models import AppSettings, MonitoredPair, MarketData, DelistingEvent, Signal
 from services.file_watcher import FileWatcherService
+from services.system import get_scraper_service
 from ui.layout import create_header
 
 class SettingsPage:
@@ -133,6 +134,12 @@ class SettingsPage:
         # Да, сервис ждет List[Dict], и self.files_list уже List[Dict].
         watcher = FileWatcherService(get_session)
         stats = await watcher.sync_files(self.files_list)
+        
+        # Запускаем БЫСТРЫЙ матч с историей рисков сразу после синхронизации
+        async with get_session() as session:
+            scraper = get_scraper_service()
+            await scraper.match_monitored_pairs_with_events(session)
+            
         ui.notify(f'Готово! {stats}', type='positive')
         if self.stats_label:
             self.stats_label.text = str(stats)
@@ -234,7 +241,7 @@ class SettingsPage:
             with ui.row().classes('gap-2'):
                 ui.button('Синхронизация отслеживаемых пар', on_click=self.run_sync).classes('bg-green-600')
                 ui.button('Обновить OHLCv', on_click=lambda: scheduler.market_service.update_all()).classes('bg-orange-600')
-                ui.button('Проверить делистинги (Scraper)', on_click=lambda: scheduler.scraper_service.check_delistings_blog()).classes('bg-red-600')
+                ui.button('Полная проверка рисков', on_click=lambda: scheduler.scraper_service.check_all_risks()).classes('bg-red-600')
             
             self.stats_label = ui.label('').classes('text-sm text-gray-500 mt-2')
 

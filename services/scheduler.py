@@ -75,7 +75,7 @@ class SchedulerService:
         """
         await self._schedule_job_from_settings(
             job_id=self.job_id_scraper,
-            func=self.scraper_service.check_delistings_blog,
+            func=self.scraper_service.check_all_risks,
             setting_key="scraper_interval_hours",
             default_interval=1,
             minute_val=self.start_at_minute + 10, # +10 минут чтобы не конфликтовало с загрузкой OHLC
@@ -97,7 +97,7 @@ class SchedulerService:
 
     async def update_interval(self, new_hours: int):
         """
-        Метод для вызова из UI при смене настроек (Market Data).
+        Метод для вызова из UI при смене настроек (закачка свечей).
         """
         if not (1 <= new_hours <= 24):
             logger.warning(f"Некорректный интервал: {new_hours}")

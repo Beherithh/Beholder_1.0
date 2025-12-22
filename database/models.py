@@ -26,6 +26,10 @@ class SignalType(str, Enum):
     DELISTING_WARNING = "delisting_warning"
     ST_WARNING = "st_warning"
 
+class DelistingEventType(str, Enum):
+    DELISTING = "delisting"
+    ST = "st"
+
 # Models
 class AppSettings(SQLModel, table=True):
     """
@@ -65,10 +69,11 @@ class DelistingEvent(SQLModel, table=True):
     """
     id: Optional[int] = Field(default=None, primary_key=True)
     exchange: str = Field(index=True)     # "GATEIO"
-    symbol: str = Field(index=True)       # "1SOS" (Базовая валюта или полный тикер)
+    symbol: str = Field(index=True)       # "1SOS" (только базовый символ, без валюты)
     
     announcement_title: str
     announcement_url: str
+    type: DelistingEventType = Field(index=True)
     found_at: datetime = Field(default_factory=datetime.utcnow)
     
     # Флаг, что мы уже обработали этот ивент и создали сигнал (чтобы не спамить)
