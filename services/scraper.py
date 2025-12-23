@@ -29,15 +29,15 @@ class ScraperService:
     
     DELIST_TRIGGER_KEYWORDS = {"delist", "oppos", "remov", "offline", "risk", "suspend"}
     ST_TRIGGER_KEYWORDS = {"st_tag", "ST Warning", "Assessment Zone"}
-    IGNORE_KEYWORDS = {"convert", "futures"}
+    IGNORE_KEYWORDS = {"convert", "future", "perpetual", "option"}
     
     # Регулярка для поиска ПАР в тексте (например: "ABC_USDT", "ABC/ETH", "ABCUSDT", "ICE")
     # Quote опциональна, чтобы захватывать и одиночные символы типа "ICE"
     # Исключены слова содержащие только цифры - (?![0-9]+\b)
+    # Минимальная длина 2 символа, чтобы отсечь шум типа "A", "I"
     QUOTE_CURRENCIES = ("USDT", "BTC", "ETH", "BUSD", "BNB", "SOL", "USDC")
     PAIR_PATTERN = re.compile(
-        r'\b(?![0-9]+\b)([A-Z0-9]{1,11})[-_/\.]?(USDT|BTC|ETH|BUSD|BNB|SOL|USDC)?\b',
-        re.IGNORECASE
+        r'\b(?![0-9]+\b)([A-Z0-9]{2,11})[-_/\.]?(USDT|BTC|ETH|BUSD|BNB|SOL|USDC)?\b'
     )
 
     # API endpoints for ST/Risk checks
@@ -64,18 +64,35 @@ class ScraperService:
         """
         Универсальный метод обновления риска пары.
         Использует RiskLevel.priority для предотвращения понижения.
-        Returns True if signal was created.
+        Returns True if something changed (risk level OR new signal created).
         """
+        changed = False
+
+        # 1. Обновляем уровень риска, если он повысился
         if new_risk.priority > pair.risk_level.priority:
             pair.risk_level = new_risk
             session.add(pair)
+            changed = True
             
+        # 2. Проверяем, нужно ли отправить уведомление (даже если уровень риска тот же, но контекст/сообщение новые)
+        if new_risk != RiskLevel.NORMAL:
             # Check for duplicate signal
             sig_check = select(Signal).where(Signal.type == signal_type, Signal.raw_message == msg)
-            if not (await session.execute(sig_check)).first():
+            existing_sig = (await session.execute(sig_check)).first()
+            
+            if not existing_sig:
+                logger.warning(f"Creating NEW signal: {msg}")
                 session.add(Signal(type=signal_type, raw_message=msg))
-                return True
-        return False
+                
+                # Отправка в Telegram
+                from services.system import get_telegram_service
+                asyncio.create_task(get_telegram_service().send_message(f"<b>[ALERT]</b> {msg}"))
+                
+                changed = True
+            else:
+                logger.info(f"Signal already exists, skipping: {msg[:100]}...")
+
+        return changed
     
     async def _fetch_html(self, url: str) -> str:
         """
@@ -121,27 +138,60 @@ class ScraperService:
             for tag in soup(["script", "style", "nav", "header", "footer", "aside", "iframe", "noscript"]):
                 tag.decompose()
 
-            # 2. Remove elements by class/id (heuristics for sidebars/related)
-            # Keywords: related, sidebar, menu, widget, recent, popular, recommended
-            noise_pattern = re.compile(r'(related|sidebar|menu|widget|recent|popular|recommend|footer|header|cookie)', re.I)
+            # 2. Heuristics for sidebars/related via keywords in class/id
+            noise_pattern = re.compile(
+                r'(related|sidebar|menu|widget|recent|popular|recommend|footer|header|cookie|social|share|comment|banner|ad-|promo|breadcrumb|nav|tab|pagenavi)', 
+                re.I
+            )
             
-            # We must convert iterator to list because we modify the tree
             for tag in list(soup.find_all(attrs={"class": noise_pattern})):
                 tag.decompose()
                 
             for tag in list(soup.find_all(attrs={"id": noise_pattern})):
                 tag.decompose()
-            
-            # -------------------------------
 
-            text = soup.get_text(" ", strip=True) # Получаем весь текст (он теперь чище)
+            # 3. Targeted extraction of main content (Exchange specific)
+            # This is the most effective way to avoid sidebar noise
+            main_content = None
             
-            # Ищем пары вида XXX_USDT
-            found_pairs = self.PAIR_PATTERN.findall(text) # Возвращает список кортежей [('TIME', 'USDT'), ('PLAN', 'ETH')]
+            if "mexc.com" in url:
+                # MEXC specific: usually div#content or div.article_articleContent...
+                main_content = soup.find('div', id='content') or soup.find('div', class_=re.compile(r'articleContent'))
+            elif "gate." in url:
+                # Gate specific: usually div#article-detail-container
+                main_content = soup.find('div', id='article-detail-container')
+            
+            # If we found a specific container, use it. Otherwise fall back to body.
+            if main_content:
+                soup = main_content
+                logger.info(f"Targeted main content container found for {url}")
+            else:
+                # Heuristic: Find H1 and take its container if it's large enough
+                h1 = soup.find('h1')
+                if h1:
+                    parent = h1.parent
+                    # If parent is just a wrapper, maybe go one level up
+                    if len(parent.get_text()) < 200 and parent.parent:
+                        parent = parent.parent
+                    soup = parent
+            
+            text = soup.get_text(" ", strip=True) 
+            
+            # Ищем пары вида XXX_USDT или просто XX
+            raw_matches = self.PAIR_PATTERN.finditer(text)
             
             result = set()
-            for base, quote in found_pairs:
+            for match in raw_matches:
+                base = match.group(1)
+                quote = match.group(2)
+                
                 base_upper = base.upper()
+                
+                # Пропускаем, если base - это ключевое слово (защита от ложных срабатываний)
+                if base_upper.lower() in self.ST_TRIGGER_KEYWORDS or \
+                   any(k.upper() == base_upper for k in self.IGNORE_KEYWORDS) or \
+                   base_upper in ("TRADING", "DELISTING", "PAIR", "LIST", "SUPPORT", "ZONE"):
+                    continue
                 # Постобработка: если quote не была захвачена отдельно, 
                 # проверяем не застряла ли она в конце base (например ICEUSDT)
                 if not quote:
@@ -162,6 +212,7 @@ class ScraperService:
         2. Ищет ключевые слова "Delist" и др. в заголовках.
         3. Deep Scan: заходит внутрь и ищет пары.
         4. Сохраняет в БД.
+        + match_monitored_pairs_with_events
         """
         
         sources = [
@@ -320,6 +371,7 @@ class ScraperService:
                     events_map[ev.symbol].append(ev)
 
         signals_created = 0
+        pairs_updated = 0
         
         for pair in active_pairs:
             base_currency = pair.symbol.split('/')[0]
@@ -356,20 +408,23 @@ class ScraperService:
                 
                 # Используем универсальный метод обновления риска
                 if new_risk:
-                    msg = f"{msg_prefix} Pair: {pair.symbol} ({pair.exchange}). Source: {evidence.exchange}. Article: {evidence.announcement_title}"
+                    msg = f"{msg_prefix} Pair: {pair.symbol} ({pair.source_label}). Active: {evidence.exchange}. Article: {evidence.announcement_url}"
                     if await self._update_pair_risk(session, pair, new_risk, signal_type, msg):
-                        signals_created += 1
+                        pairs_updated += 1
 
-        if signals_created > 0:
+        if pairs_updated > 0:
             await session.commit()
-            logger.warning(f"Матчинг завершен: сгенерировано {signals_created} алертов риска!")
+            logger.warning(f"Матчинг завершен: обновлено {pairs_updated} пар!")
         else:
-            logger.info("Матчинг завершен: новых алертов не найдено.")
+            logger.info("Матчинг завершен: изменений не найдено.")
+            
+        return pairs_updated
 
     async def check_api_risks(self):
         """
         Проверка API бирж на статус ST/Risk.
         Унифицированный метод + Кросс-Алерты + Auto-Recovery.
+        + match_monitored_pairs_with_events
         """
         logger.info("Проверка API на ST/Risk статусы (Direct & Cross)...")
         

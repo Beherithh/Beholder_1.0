@@ -1,18 +1,11 @@
 from nicegui import ui, app
 from database.core import init_db
+from ui.pages.dashboard import dashboard_page # Register Dashboard as Home
 from ui.pages.settings import settings_page # Register page
 from ui.pages.logs import logs_page # Register Logs page
 from ui.layout import create_header
 from services.system import init_services, get_scheduler
 
-@ui.page('/')
-def main_page():
-    create_header()
-
-    with ui.column().classes('w-full items-center mt-10'):
-        ui.label('Добро пожаловать в Beholder').classes('text-4xl font-bold text-gray-700')
-        ui.label('Перейдите в настройки для добавления файлов').classes('text-gray-500 mt-2')
-        ui.button('Перейти в Настройки', on_click=lambda: ui.open('/settings')).classes('mt-4 bg-blue-600')
 
 
 
@@ -21,7 +14,7 @@ async def startup():
     await init_db()
     
     print("Запуск сервисов...")
-    init_services()
+    await init_services()
     
     # Инициализация перехвата логов для UI
     from ui.pages.logs import init_logging
