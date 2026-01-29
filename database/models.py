@@ -10,7 +10,6 @@ class MonitoringStatus(str, Enum):
 
 class RiskLevel(str, Enum):
     NORMAL = "normal"
-    PRICE_DROP = "price_drop" # NEW: Significant price drop detected
     CROSS_RISK = "cross_risk"
     CROSS_DELISTING = "cross_delisting"
     RISK_ZONE = "risk_zone"
@@ -18,21 +17,16 @@ class RiskLevel(str, Enum):
 
     @property
     def priority(self) -> int:
-        """Возвращает числовой приоритет для сравнения (0 = низкий, 5 = высокий)."""
-        order = [
-            RiskLevel.NORMAL, 
-            RiskLevel.PRICE_DROP, 
-            RiskLevel.CROSS_RISK, 
-            RiskLevel.CROSS_DELISTING, 
-            RiskLevel.RISK_ZONE, 
-            RiskLevel.DELISTING_PLANNED
-        ]
+        """Возвращает числовой приоритет для сравнения (0 = низкий, 4 = высокий)."""
+        order = [RiskLevel.NORMAL, RiskLevel.CROSS_RISK, RiskLevel.CROSS_DELISTING, RiskLevel.RISK_ZONE, RiskLevel.DELISTING_PLANNED]
         return order.index(self)
 
 class SignalType(str, Enum):
     PRICE_CHANGE = "price_change"
+    VOLUME_ALERT = "volume_alert"
     DELISTING_WARNING = "delisting_warning"
     ST_WARNING = "st_warning"
+    RANK_WARNING = "rank_warning"
 
 class DelistingEventType(str, Enum):
     DELISTING = "delisting"
@@ -67,6 +61,9 @@ class MonitoredPair(SQLModel, table=True):
     # Уровень риска (обновляется скрапером)
     risk_level: RiskLevel = Field(default=RiskLevel.NORMAL)
     
+    # CoinMarketCap Rank (для фильтрации мусора)
+    cmc_rank: Optional[int] = Field(default=None)
+
     # Связи
     market_data: list["MarketData"] = Relationship(back_populates="pair")
 

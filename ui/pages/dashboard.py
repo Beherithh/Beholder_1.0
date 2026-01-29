@@ -6,8 +6,9 @@ from sqlmodel import select, func
 from nicegui import ui
 
 from database.core import get_session
-from database.models import MonitoredPair, MarketData, RiskLevel, MonitoringStatus, DelistingEvent
+from database.models import MonitoredPair, MarketData, RiskLevel, MonitoringStatus, DelistingEvent, Signal, SignalType
 from ui.layout import create_header
+from datetime import timedelta
 
 class DashboardPage:
     def __init__(self):
@@ -30,9 +31,19 @@ class DashboardPage:
         """
         async with get_session() as session:
             # 1. Получаем все активные пары
+            # 1. Получаем все активные пары
             stmt = select(MonitoredPair).where(MonitoredPair.monitoring_status == MonitoringStatus.ACTIVE)
             pairs = (await session.execute(stmt)).scalars().all()
             
+            # Загружаем настройки CMC Rank Threshold
+            from database.models import AppSettings
+            rank_threshold = 999999
+            try:
+                rt_obj = await session.get(AppSettings, "cmc_rank_threshold")
+                if rt_obj and rt_obj.value:
+                    rank_threshold = int(rt_obj.value)
+            except: pass
+
             data_rows = []
             stats = {"total": len(pairs), "risk": 0, "delist": 0}
             
@@ -80,17 +91,55 @@ class DashboardPage:
                 elif pair.risk_level in [RiskLevel.CROSS_RISK]:
                     risk_color = "text-yellow-600 font-medium"
 
+                # Поиск недавних алертов для этой пары (за последние 10 дней)
+                alerts_cutoff = datetime.utcnow() - timedelta(days=10)
+                
+                # Price alert
+                price_alert_stmt = select(Signal).where(
+                    Signal.type == SignalType.PRICE_CHANGE,
+                    Signal.raw_message.contains(pair.symbol),
+                    Signal.created_at >= alerts_cutoff
+                ).limit(1)
+                has_price_alert = (await session.execute(price_alert_stmt)).first() is not None
+                
+                # Volume alert
+                volume_alert_stmt = select(Signal).where(
+                    Signal.type == SignalType.VOLUME_ALERT,
+                    Signal.raw_message.contains(pair.symbol),
+                    Signal.created_at >= alerts_cutoff
+                ).limit(1)
+                has_volume_alert = (await session.execute(volume_alert_stmt)).first() is not None
+
+                has_volume_alert = (await session.execute(volume_alert_stmt)).first() is not None
+
+                # Rank Logic
+                rank_val = pair.cmc_rank
+                rank_display = str(rank_val) if rank_val else "—"
+                rank_color = "text-gray-400"
+                if rank_val:
+                    if rank_val <= 100:
+                        rank_color = "text-green-600 font-bold"
+                    elif rank_val > rank_threshold:
+                        rank_color = "text-red-600 font-bold"
+                    else:
+                        rank_color = "text-orange-500 font-bold"
+
                 data_rows.append({
                     "id": pair.id,
                     "exchange": pair.exchange,
                     "symbol": pair.symbol,
                     "price": f"{price_val:.8f}".rstrip('0').rstrip('.') if price_val > 0 else "N/A",
+                    "rank": rank_display,
+                    "rank_color": rank_color,
                     "risk_level": pair.risk_level.value.upper().replace("_", " "),
                     "risk_color": risk_color,
                     "announcement_url": announcement_url,
                     "labels": labels_str,
                     "labels_count": len(labels) if isinstance(labels, list) else 1,
-                    "updated": updated_at
+                    "updated": updated_at,
+                    "tv_url": f"https://www.tradingview.com/chart/?symbol={pair.exchange.upper()}:{pair.symbol.replace('/', '')}",
+                    "has_price_alert": has_price_alert,
+                    "has_volume_alert": has_volume_alert
                 })
             
             return {"rows": data_rows, "stats": stats}
@@ -104,56 +153,61 @@ class DashboardPage:
             self.full_data = initial_data["rows"]
             stats = initial_data["stats"]
 
-            with ui.column().classes('w-full p-6 bg-gray-50 min-h-screen'):
-                # Секция статистики
-                with ui.row().classes('w-full gap-4 mb-6'):
-                    with ui.card().classes('flex-1 p-4 bg-white shadow-sm border-l-4 border-blue-500'):
-                        ui.label('Всего пар').classes('text-sm text-gray-500 uppercase')
-                        self.stats_cards['total'] = ui.label(str(stats['total'])).classes('text-3xl font-bold')
+            with ui.column().classes('w-full p-2 bg-gray-50 min-h-screen gap-2'):
+                # Секция статистики + фильтры (компактно в одну строку)
+                with ui.row().classes('w-full gap-2 items-center'):
+                    # Статистика (компактные карточки)
+                    with ui.row().classes('gap-2'):
+                        with ui.card().classes('p-2 bg-white shadow-sm border-l-4 border-blue-500'):
+                            with ui.row().classes('items-center gap-2'):
+                                ui.label('Пар:').classes('text-xs text-gray-500')
+                                self.stats_cards['total'] = ui.label(str(stats['total'])).classes('text-xl font-bold')
+                        
+                        with ui.card().classes('p-2 bg-white shadow-sm border-l-4 border-orange-500'):
+                            with ui.row().classes('items-center gap-2'):
+                                ui.label('ST:').classes('text-xs text-gray-500')
+                                self.stats_cards['risk'] = ui.label(str(stats['risk'])).classes('text-xl font-bold text-orange-600')
+
+                        with ui.card().classes('p-2 bg-white shadow-sm border-l-4 border-red-500'):
+                            with ui.row().classes('items-center gap-2'):
+                                ui.label('Delist:').classes('text-xs text-gray-500')
+                                self.stats_cards['delist'] = ui.label(str(stats['delist'])).classes('text-xl font-bold text-red-600')
+
+                    # Разделитель
+                    ui.space()
+
+                    # Фильтры (компактно)
+                    search_input = ui.input(placeholder='Поиск...').classes('w-48').props('dense outlined')
+                    search_input.bind_value(self, 'search_text')
+                    search_input.on('update:model-value', self.apply_filters)
+
+                    exchanges = self._get_unique_exchanges()
+                    self.ex_select = ui.select(exchanges, label='Биржа', value='Все').classes('w-28').props('dense outlined')
+                    self.ex_select.bind_value(self, 'filter_exchange')
+                    self.ex_select.on('update:model-value', self.apply_filters)
+
+                    statuses = self._get_unique_statuses()
+                    self.st_select = ui.select(statuses, label='Статус', value='Все').classes('w-36').props('dense outlined')
+                    self.st_select.bind_value(self, 'filter_status')
+                    self.st_select.on('update:model-value', self.apply_filters)
                     
-                    with ui.card().classes('flex-1 p-4 bg-white shadow-sm border-l-4 border-orange-500'):
-                        ui.label('В зоне риска (ST)').classes('text-sm text-gray-500 uppercase')
-                        self.stats_cards['risk'] = ui.label(str(stats['risk'])).classes('text-3xl font-bold text-orange-600')
-
-                    with ui.card().classes('flex-1 p-4 bg-white shadow-sm border-l-4 border-red-500'):
-                        ui.label('Делистинг скоро').classes('text-sm text-gray-500 uppercase')
-                        self.stats_cards['delist'] = ui.label(str(stats['delist'])).classes('text-3xl font-bold text-red-600')
-
-                # Секция фильтров
-                with ui.card().classes('w-full bg-white shadow-md mb-4 p-4'):
-                    with ui.row().classes('w-full items-center gap-4'):
-                        ui.icon('filter_alt').classes('text-gray-400 text-xl')
-                        
-                        # Поиск
-                        search_input = ui.input(placeholder='Поиск (BTC, MEXC, Метка...)').classes('flex-grow')
-                        search_input.bind_value(self, 'search_text')
-                        search_input.on('update:model-value', self.apply_filters)
-
-                        # Фильтр по Бирже
-                        exchanges = self._get_unique_exchanges()
-                        self.ex_select = ui.select(exchanges, label='Биржа', value='Все').classes('w-40')
-                        self.ex_select.bind_value(self, 'filter_exchange')
-                        self.ex_select.on('update:model-value', self.apply_filters)
-
-                        # Фильтр по Статусу
-                        statuses = self._get_unique_statuses()
-                        self.st_select = ui.select(statuses, label='Статус', value='Все').classes('w-48')
-                        self.st_select.bind_value(self, 'filter_status')
-                        self.st_select.on('update:model-value', self.apply_filters)
-                        
-                        ui.button(icon='restart_alt', on_click=self.reset_filters).props('flat round gray')
+                    ui.button(icon='restart_alt', on_click=self.reset_filters).props('flat round dense')
 
                 # Таблица данных
                 with ui.card().classes('w-full bg-white shadow-md'):
-                    ui.label('Мониторинг активов').classes('text-xl font-bold p-4 border-b w-full')
+                    ui.label('Активные пары').classes('text-xl font-bold p-4 border-b w-full')
                     
                     columns = [
                         {'name': 'exchange', 'label': 'Биржа', 'field': 'exchange', 'align': 'left', 'sortable': True},
                         {'name': 'symbol', 'label': 'Пара', 'field': 'symbol', 'align': 'left', 'sortable': True},
+                        {'name': 'rank', 'label': '#', 'field': 'rank', 'align': 'center', 'sortable': True},
                         {'name': 'price', 'label': 'Цена', 'field': 'price', 'align': 'right', 'sortable': True},
                         {'name': 'risk_level', 'label': 'Статус', 'field': 'risk_level', 'align': 'center', 'sortable': True},
-                        {'name': 'labels_count', 'label': 'Кол-во списков', 'field': 'labels_count', 'align': 'center', 'sortable': True},
+                        {'name': 'has_price_alert', 'label': '📈', 'field': 'has_price_alert', 'align': 'center', 'sortable': True},
+                        {'name': 'has_volume_alert', 'label': '📊', 'field': 'has_volume_alert', 'align': 'center', 'sortable': True},
+                        {'name': 'labels_count', 'label': 'Списков', 'field': 'labels_count', 'align': 'center', 'sortable': True},
                         {'name': 'labels', 'label': 'Метки файлов', 'field': 'labels', 'align': 'left', 'sortable': True},
+                        {'name': 'tv_url', 'label': 'ТВ', 'field': 'tv_url', 'align': 'center'},
                         {'name': 'updated', 'label': 'Обновлено', 'field': 'updated', 'align': 'right'},
                     ]
 
@@ -179,6 +233,44 @@ class DashboardPage:
                                     {{ props.value }}
                                 </q-badge>
                             </template>
+                        </q-td>
+                    ''')
+
+                    # Кастомная отрисовка для Rank
+                    self.table.add_slot('body-cell-rank', '''
+                        <q-td :props="props">
+                            <span :class="props.row.rank_color">{{ props.value }}</span>
+                        </q-td>
+                    ''')
+
+                    # Кастомная отрисовка для колонки TradingView
+                    self.table.add_slot('body-cell-tv_url', '''
+                        <q-td :props="props">
+                            <a :href="props.value" target="_blank" class="no-underline text-blue-600">
+                                <q-btn flat round dense icon="show_chart" color="primary">
+                                    <q-tooltip>Открыть график на TradingView</q-tooltip>
+                                </q-btn>
+                            </a>
+                        </q-td>
+                    ''')
+
+                    # Кастомная отрисовка для алерта цены
+                    self.table.add_slot('body-cell-has_price_alert', '''
+                        <q-td :props="props">
+                            <q-icon v-if="props.value" name="warning" color="orange">
+                                <q-tooltip>Алерт по цене (10 дн)</q-tooltip>
+                            </q-icon>
+                            <span v-else class="text-gray-300">—</span>
+                        </q-td>
+                    ''')
+
+                    # Кастомная отрисовка для алерта объема
+                    self.table.add_slot('body-cell-has_volume_alert', '''
+                        <q-td :props="props">
+                            <q-icon v-if="props.value" name="warning" color="purple">
+                                <q-tooltip>Алерт по объему (10 дн)</q-tooltip>
+                            </q-icon>
+                            <span v-else class="text-gray-300">—</span>
                         </q-td>
                     ''')
 

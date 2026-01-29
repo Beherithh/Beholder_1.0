@@ -82,11 +82,14 @@ class ScraperService:
             
             if not existing_sig:
                 logger.warning(f"Creating NEW signal: {msg}")
-                session.add(Signal(type=signal_type, raw_message=msg))
+                new_sig = Signal(type=signal_type, raw_message=msg)
+                session.add(new_sig)
+                await session.commit()
+                await session.refresh(new_sig)
                 
                 # Отправка в Telegram
-                from services.system import get_telegram_service
-                asyncio.create_task(get_telegram_service().send_message(f"<b>[ALERT]</b> {msg}"))
+                from services.notifications import send_and_log_signal
+                asyncio.create_task(send_and_log_signal(new_sig.id, msg, prefix="[ALERT]"))
                 
                 changed = True
             else:
@@ -188,8 +191,7 @@ class ScraperService:
                 base_upper = base.upper()
                 
                 # Пропускаем, если base - это ключевое слово (защита от ложных срабатываний)
-                if base_upper.lower() in self.ST_TRIGGER_KEYWORDS or \
-                   any(k.upper() == base_upper for k in self.IGNORE_KEYWORDS) or \
+                if any(k.upper() == base_upper for k in self.IGNORE_KEYWORDS) or \
                    base_upper in ("TRADING", "DELISTING", "PAIR", "LIST", "SUPPORT", "ZONE"):
                     continue
                 # Постобработка: если quote не была захвачена отдельно, 
@@ -558,8 +560,26 @@ class ScraperService:
     async def check_all_risks(self):
         """
         Вызывает все проверки риска: блог и API.
+        Перед проверкой автоматически синхронизирует список пар из файлов.
         """
         logger.info("=== Запуск полной проверки рисков Delistings + ST ===")
+        
+        # Автоматическая синхронизация файлов перед проверкой
+        try:
+            logger.info("Синхронизация списка пар из файлов...")
+            from services.file_watcher import FileWatcherService
+            watcher = FileWatcherService(get_session)
+            stats = await watcher.sync_from_settings()
+            logger.info(f"Синхронизация завершена: {stats}")
+            
+            # Быстрый матч с существующими событиями
+            async with get_session() as session:
+                matches = await self.match_monitored_pairs_with_events(session)
+                logger.info(f"Найдено совпадений с историей: {matches}")
+        except Exception as e:
+            logger.error(f"Ошибка синхронизации файлов: {e}")
+        
+        # Основные проверки
         await self.check_delistings_blog()
         await self.check_api_risks()
         logger.info("=== Полная проверка рисков Delistings + ST завершена ===")

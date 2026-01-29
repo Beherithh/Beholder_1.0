@@ -22,8 +22,12 @@ async def init_services():
     # 2. Scraper Service
     scraper_service = ScraperService(get_session)
     
-    # 3. Scheduler Service (нужен market_service и scraper_service)
-    scheduler_service = SchedulerService(market_service, scraper_service)
+    # 3. CMC Service
+    from services.cmc import CMCService
+    cmc_service = CMCService(get_session)
+
+    # 4. Scheduler Service (нужен market_service, scraper_service и cmc_service)
+    scheduler_service = SchedulerService(market_service, scraper_service, cmc_service)
 
     # 4. Telegram Service + Загрузка настроек из БД
     from database.models import AppSettings
@@ -43,6 +47,10 @@ def get_scheduler() -> SchedulerService:
     if not scheduler_service:
         raise RuntimeError("Services not initialized! Call init_services() first.")
     return scheduler_service
+
+def get_cmc_service():
+    from services.cmc import CMCService
+    return CMCService(get_session)
 
 def get_market_service() -> MarketDataService:
     if not market_service:

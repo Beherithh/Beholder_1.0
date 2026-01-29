@@ -27,6 +27,24 @@ class SettingsPage:
         self.is_updating_ohlcv = False
         self.is_checking_news = False
         
+        # Настройки алертов (по умолчанию пустые)
+        self.alert_price_hours_pump_period = None
+        self.alert_price_hours_dump_period = None
+        self.alert_price_hours_pump_threshold = None
+        self.alert_price_hours_dump_threshold = None
+        self.alert_price_days_pump_period = None
+        self.alert_price_days_dump_period = None
+        self.alert_price_days_pump_threshold = None
+        self.alert_price_days_dump_threshold = None
+        self.alert_volume_days_period = None
+        self.alert_volume_days_threshold = None
+        self.alert_dedup_hours = 12  # блокировка повторных алертов (по умолчанию 12 часов)
+        
+        # Настройки CoinMarketCap
+        self.cmc_api_key = ""
+        self.cmc_rank_threshold = None
+        self.cmc_update_interval_days = 5
+        
     async def load_settings(self):
         """Загружаем список файлов из БД"""
         async with get_session() as session:
@@ -47,6 +65,50 @@ class SettingsPage:
             
             chat_id_set = await session.get(AppSettings, "tg_chat_id")
             self.tg_chat_id = chat_id_set.value if chat_id_set else ""
+
+            # Загружаем настройки алертов
+            async def get_val_int(key):
+                s = await session.get(AppSettings, key)
+                try:
+                    return int(float(s.value)) if s and s.value and s.value != 'None' else None
+                except: return None
+
+            async def get_val_float(key):
+                s = await session.get(AppSettings, key)
+                try:
+                    return float(s.value) if s and s.value and s.value != 'None' else None
+                except: return None
+
+            # Fallback/Migration Logic:
+            # If explicit pump/dump period is missing, try to load old "alert_price_hours_period"
+            old_h_period = await get_val_int("alert_price_hours_period")
+            old_d_period = await get_val_int("alert_price_days_period")
+
+            self.alert_price_hours_pump_period = await get_val_int("alert_price_hours_pump_period") or old_h_period
+            self.alert_price_hours_dump_period = await get_val_int("alert_price_hours_dump_period") or old_h_period
+            
+            self.alert_price_hours_pump_threshold = await get_val_float("alert_price_hours_pump_threshold")
+            self.alert_price_hours_dump_threshold = await get_val_float("alert_price_hours_dump_threshold")
+            
+            self.alert_price_days_pump_period = await get_val_int("alert_price_days_pump_period") or old_d_period
+            self.alert_price_days_dump_period = await get_val_int("alert_price_days_dump_period") or old_d_period
+            
+            self.alert_price_days_pump_threshold = await get_val_float("alert_price_days_pump_threshold")
+            self.alert_price_days_dump_threshold = await get_val_float("alert_price_days_dump_threshold")
+            self.alert_volume_days_period = await get_val_int("alert_volume_days_period")
+            self.alert_volume_days_threshold = await get_val_float("alert_volume_days_threshold")
+            
+            dedup = await get_val_int("alert_dedup_hours")
+            self.alert_dedup_hours = dedup if dedup else 12
+
+            # Загружаем настройки CMC
+            cmc_key_set = await session.get(AppSettings, "cmc_api_key")
+            self.cmc_api_key = cmc_key_set.value if cmc_key_set else ""
+            
+            self.cmc_rank_threshold = await get_val_int("cmc_rank_threshold")
+            
+            cmc_interval = await get_val_int("cmc_update_interval_days")
+            self.cmc_update_interval_days = cmc_interval if cmc_interval else 5
                 
     async def save_settings(self):
         """Сохраняем список файлов в БД"""
@@ -72,6 +134,44 @@ class SettingsPage:
                 session.add(chat_id_set)
             else:
                 chat_id_set.value = self.tg_chat_id
+
+            # Сохраняем алерты
+            alert_map = {
+                "alert_price_hours_pump_period": str(self.alert_price_hours_pump_period),
+                "alert_price_hours_dump_period": str(self.alert_price_hours_dump_period),
+                "alert_price_hours_pump_threshold": str(self.alert_price_hours_pump_threshold),
+                "alert_price_hours_dump_threshold": str(self.alert_price_hours_dump_threshold),
+                "alert_price_days_pump_period": str(self.alert_price_days_pump_period),
+                "alert_price_days_dump_period": str(self.alert_price_days_dump_period),
+                "alert_price_days_pump_threshold": str(self.alert_price_days_pump_threshold),
+                "alert_price_days_dump_threshold": str(self.alert_price_days_dump_threshold),
+                "alert_volume_days_period": str(self.alert_volume_days_period),
+                "alert_volume_days_threshold": str(self.alert_volume_days_threshold),
+                "alert_dedup_hours": str(self.alert_dedup_hours),
+            }
+            for k, v in alert_map.items():
+                obj = await session.get(AppSettings, k)
+                if not obj:
+                    session.add(AppSettings(key=k, value=v))
+                else:
+                    obj.value = v
+            
+            # Сохраняем настройки CMC
+            cmc_key_set = await session.get(AppSettings, "cmc_api_key")
+            if not cmc_key_set:
+                session.add(AppSettings(key="cmc_api_key", value=self.cmc_api_key))
+            else:
+                cmc_key_set.value = self.cmc_api_key
+                
+            cmc_rank_threshold_set = await session.get(AppSettings, "cmc_rank_threshold")
+            if not cmc_rank_threshold_set:
+                session.add(AppSettings(key="cmc_rank_threshold", value=str(self.cmc_rank_threshold)))
+            else:
+                cmc_rank_threshold_set.value = str(self.cmc_rank_threshold)
+
+            # Интервал CMC сохраняется через селект, но для порядка можно и тут (хотя лучше не дублировать логику с UI)
+            # Селект вызывает update_cmc_interval сразу. 
+            # Оставим тут только API Key и Threshold.
 
             await session.commit()
             
@@ -285,11 +385,22 @@ class SettingsPage:
                 ui.button('Сохранить', on_click=self.save_settings).classes('bg-green-600 text-white h-10')
             ui.label('Создайте бота через @BotFather и получите свой ID через @userinfobot').classes('text-xs text-gray-400')
 
+            # --- CoinMarketCap Settings ---
+            ui.separator().classes('my-4')
+            with ui.row().classes('items-center gap-2'):
+                ui.label('CoinMarketCap API').classes('text-xl font-bold')
+                ui.link('Получить ключ', 'https://pro.coinmarketcap.com/login', new_tab=True).classes('text-sm text-blue-500')
+            
+            with ui.row().classes('w-full items-center gap-4'):
+                ui.input('API Key', password=True, password_toggle_button=True).classes('flex-grow').bind_value(self, 'cmc_api_key')
+                ui.number('Порог терпимости >', min=1).classes('w-32').bind_value(self, 'cmc_rank_threshold').props('dense')
+                ui.button('Сохранить', on_click=self.save_settings).classes('bg-green-600 text-white h-10')
+
             # --- Scheduler Settings ---
             ui.separator().classes('my-4')
             ui.label('Расписание').classes('text-lg font-bold')
             
-            with ui.grid(columns=2):
+            with ui.grid(columns=3):
                 # Генератор опций для селекта: {1: '1 час', 2: '2 часа', ...}
                 # Можно сделать красивее с окончаниями, но для простоты: "X ч."
                 hours_options = {h: f'{h} ч.' for h in range(1, 25)}
@@ -318,40 +429,104 @@ class SettingsPage:
                 async with get_session() as session:
                     s = await session.get(AppSettings, "scraper_interval_hours")
                     if s: current_scraper_interval = int(s.value)
+                
+                # --- CMC Interval ---
+                ui.label('Обновление рангов CMC').classes('text-md font-medium mt-2')
+                async def on_cmc_change(e):
+                    val = int(e.value)
+                    await scheduler.update_cmc_interval(val)
+                    ui.notify(f'Interval CMC: {val} дн.', type='positive')
+
+                current_cmc_interval = 5
+                async with get_session() as session:
+                    s = await session.get(AppSettings, "cmc_update_interval_days")
+                    if s: current_cmc_interval = int(s.value)
+                
+                # Опции для дней: 1...30
+                days_options = {d: f'{d} дн.' for d in range(1, 31)}
 
                 ui.select(options=hours_options, value=current_market_interval, on_change=on_market_change).classes('w-32')
                 ui.select(options=hours_options, value=current_scraper_interval, on_change=on_scraper_change).classes('w-32')
+                ui.select(options=days_options, value=current_cmc_interval, on_change=on_cmc_change).classes('w-32')
 
-            # --- Action Area ---
+            # Пояснение логики работы всех служб
+            with ui.column().classes('w-full gap-2 p-3 bg-blue-50 rounded border-l-4 border-blue-400 mt-2'):
+                ui.label('ℹ️ Как работают службы мониторинга:').classes('text-sm font-bold text-blue-700')
+                ui.markdown('''
+**Расписание запуска:**
+- **OHLCV (свечи)** — каждый час в **:05** (10:05, 11:05, 12:05...)
+- **Scraper (делистинги и ST)** — каждый час в **:15** (10:15, 11:15, 12:15...)
+
+**Что происходит при запуске OHLCV** (:05):
+1. Загрузка свечей для всех активных пар
+2. Анализ изменения цены (Pump/Dump)
+3. Анализ объёма торгов (USDT)
+4. Отправка алертов в Telegram (если пороги превышены)
+
+**Что происходит при запуске Scraper** (:15):
+1. **Auto-Sync:** автоматическое обновление списка пар из файлов
+2. **Матчинг:** сверка новых пар с историей делистингов/ST
+3. **Blog Scraping:** поиск новых статей на сайтах
+4. **API Check:** проверка ST-тегов через API бирж
+5. Отправка уведомлений о новых рисках
+
+**Интервалы > 1 часа (примеры):**
+- **6 часов** → OHLCV: 00:05, 06:05, 12:05, 18:05 | Scraper: 00:15, 06:15, 12:15, 18:15
+- **14 часов** → Scraper: 00:15, 14:15 (2 раза в сутки)
+- **24 часа** → OHLCV: 00:05 (раз в сутки)
+
+*⚠️ Это фиксированное время (модуль часа), а не "каждые X часов от старта".*
+                ''').classes('text-xs text-gray-700')
+
+            # --- Analysis Alerts Settings ---
             ui.separator().classes('my-4')
-            ui.label('Ручное управление').classes('text-lg font-bold')
-            with ui.row().classes('gap-2'):
-                btn_sync = ui.button('Синхронизация отслеживаемых пар', 
-                                    on_click=lambda: self.run_sync(btn_sync), 
-                                    color='grey').props('dense size=md')
-                btn_sync.bind_enabled_from(self, 'is_syncing', backward=lambda x: not x)
-
-                btn_ohlcv = ui.button('Обновить OHLCv', 
-                                     on_click=lambda: self.run_ohlcv_update(scheduler), 
-                                     color='grey').props('dense size=md')
-                btn_ohlcv.bind_enabled_from(self, 'is_updating_ohlcv', backward=lambda x: not x)
-
-                btn_news = ui.button('Проверка новостей на Delist/ST', 
-                                    on_click=lambda: self.run_scraper_check(scheduler), 
-                                    color='grey').props('dense size=md')
-                btn_news.bind_enabled_from(self, 'is_checking_news', backward=lambda x: not x)
+            ui.label('Настройки алертов (Цена и Объем)').classes('text-xl font-bold mb-2')
             
-            self.stats_label = ui.label('').classes('text-sm text-gray-500 mt-2')
-
-            # --- Database Management ---
-            ui.separator().classes('my-4')
-            ui.label('Управление Базой Данных').classes('text-lg font-bold text-red-800')
+            with ui.column().classes('w-full gap-4'):
+                # Pump Alerts
+                ui.label('📈 PUMP (рост цены)').classes('text-lg font-bold text-green-600')
+                with ui.row().classes('items-center gap-4 ml-4'):
+                    ui.label('Часы:').classes('w-32')
+                    ui.number('Период (ч)', min=1, max=168).classes('w-24').bind_value(self, 'alert_price_hours_pump_period').props('dense')
+                    ui.number('Порог %', min=0.1).classes('w-24').bind_value(self, 'alert_price_hours_pump_threshold').props('dense suffix=%')
+                
+                with ui.row().classes('items-center gap-4 ml-4'):
+                    ui.label('Дни:').classes('w-32')
+                    ui.number('Период (дн)', min=1, max=30).classes('w-24').bind_value(self, 'alert_price_days_pump_period').props('dense')
+                    ui.number('Порог %', min=0.1).classes('w-24').bind_value(self, 'alert_price_days_pump_threshold').props('dense suffix=%')
+                
+                ui.separator().classes('my-2')
+                
+                # Dump Alerts
+                ui.label('📉 DUMP (падение цены)').classes('text-lg font-bold text-red-600')
+                with ui.row().classes('items-center gap-4 ml-4'):
+                    ui.label('Часы:').classes('w-32')
+                    ui.number('Период (ч)', min=1, max=168).classes('w-24').bind_value(self, 'alert_price_hours_dump_period').props('dense')
+                    ui.number('Порог %', min=0.1).classes('w-24').bind_value(self, 'alert_price_hours_dump_threshold').props('dense suffix=%')
+                
+                with ui.row().classes('items-center gap-4 ml-4'):
+                    ui.label('Дни:').classes('w-32')
+                    ui.number('Период (дн)', min=1, max=30).classes('w-24').bind_value(self, 'alert_price_days_dump_period').props('dense')
+                    ui.number('Порог %', min=0.1).classes('w-24').bind_value(self, 'alert_price_days_dump_threshold').props('dense suffix=%')
             
-            with ui.row().classes('gap-2'):
-                ui.button('Очистить отслеживаемые пары', on_click=self.clear_monitored_pairs).props('outline color=red')
-                ui.button('Очистить OHLCv (MarketData)', on_click=self.clear_market_data).props('outline color=red')
-                ui.button('Очистить Делистинги/ST', on_click=self.clear_delistings).props('outline color=red')
-                ui.button('Очистить сигналы', on_click=self.clear_signals).props('outline color=red')
+                ui.separator().classes('my-4')
+                
+                # Volume Days
+                with ui.row().classes('items-center gap-4'):
+                    ui.label('Объем торгов (дни):').classes('w-48')
+                    ui.number('Дни', min=1, max=30).classes('w-24').bind_value(self, 'alert_volume_days_period').props('dense')
+                    ui.number('Порог USDT в день', min=0).classes('w-40').bind_value(self, 'alert_volume_days_threshold').props('dense suffix=USDT')
+                
+                # Deduplication window
+                ui.separator().classes('my-2')
+                with ui.row().classes('items-center gap-4'):
+                    ui.label('Блокировать одинаковые алерты:').classes('w-48')
+                    ui.number('Часы', min=1, max=168).classes('w-24').bind_value(self, 'alert_dedup_hours').props('dense')
+                    ui.label('(одинаковый алерт по той же паре не чаще чем раз в X часов)').classes('text-xs text-gray-400')
+                
+                ui.button('Сохранить настройки алертов', on_click=self.save_settings).classes('bg-blue-600 text-white w-fit self-end')
+                ui.label('Если поля пустые - алерт считается выключенным. Пороги указываются как положительные числа.').classes('text-xs text-gray-400')
+
 
 @ui.page('/settings')
 async def settings_page():

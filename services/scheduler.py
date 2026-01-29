@@ -8,23 +8,26 @@ from database.models import AppSettings
 from database.core import get_session
 from services.market_data import MarketDataService
 from services.scraper import ScraperService
+from services.cmc import CMCService
 
 class SchedulerService:
     """
     Сервис-планировщик для запуска фоновых задач по расписанию.
     """
     
-    def __init__(self, market_data_service: MarketDataService, scraper_service: ScraperService):
+    def __init__(self, market_data_service: MarketDataService, scraper_service: ScraperService, cmc_service: CMCService):
         self.scheduler = AsyncIOScheduler()
         self.market_service = market_data_service
         self.scraper_service = scraper_service
+        self.cmc_service = cmc_service
         
         self.job_id_market = "market_data_update"
         self.job_id_scraper = "scraper_check"
+        self.job_id_cmc = "cmc_rank_update"
         
         # Значения по умолчанию
         self.default_interval_hours = 1
-        self.start_at_minute = 2 
+        self.start_at_minute = 5 
 
     def start(self):
         if not self.scheduler.running:
@@ -37,6 +40,7 @@ class SchedulerService:
         """
         await self.schedule_market_update()
         await self.schedule_scraper_check()
+        await self.schedule_cmc_update()
 
     async def _schedule_job_from_settings(self, job_id, func, setting_key, default_interval, minute_val, log_name):
         """
@@ -49,7 +53,7 @@ class SchedulerService:
             if settings_obj:
                 try:
                     val = int(settings_obj.value)
-                    if 1 <= val <= 24:
+                    if 1 <= val <= 1000: # Расширен диапазон для дней
                         interval = val
                 except ValueError:
                     pass
@@ -78,7 +82,7 @@ class SchedulerService:
             func=self.scraper_service.check_all_risks,
             setting_key="scraper_interval_hours",
             default_interval=1,
-            minute_val=self.start_at_minute + 10, # +10 минут чтобы не конфликтовало с загрузкой OHLC
+            minute_val=15, # :15 минут для скрапера
             log_name="Планирование скрапера"
         )
 
@@ -94,6 +98,41 @@ class SchedulerService:
             minute_val=self.start_at_minute,
             log_name="Планирование обновления рынка"
         )
+
+    async def schedule_cmc_update(self):
+        """
+        Запуск обновления рангов CMC.
+        Интервал в ДНЯХ.
+        """
+        interval_days = 5
+        async with get_session() as session:
+            s = await session.get(AppSettings, "cmc_update_interval_days")
+            if s:
+                try: interval_days = int(s.value)
+                except: pass
+        
+        # Удаляем старую задачу
+        if self.scheduler.get_job(self.job_id_cmc):
+            self.scheduler.remove_job(self.job_id_cmc)
+
+        # Запускаем раз в N дней. Время - например 04:30 утра (чтобы не мешать другим)
+        self.scheduler.add_job(
+            self.cmc_service.sync_ranks,
+            trigger=CronTrigger(day=f"*/{interval_days}", hour="4", minute="30"),
+            id=self.job_id_cmc,
+            replace_existing=True
+        )
+        logger.info(f"Планирование CMC: Каждые {interval_days} дн. (в 04:30)")
+
+    async def update_cmc_interval(self, new_days: int):
+        """Метод для UI"""
+        if new_days < 1: return
+        async with get_session() as session:
+            s = await session.get(AppSettings, "cmc_update_interval_days")
+            if not s: session.add(AppSettings(key="cmc_update_interval_days", value=str(new_days)))
+            else: s.value = str(new_days)
+            await session.commit()
+        await self.schedule_cmc_update()
 
     async def update_interval(self, new_hours: int):
         """

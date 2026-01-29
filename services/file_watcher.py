@@ -194,3 +194,29 @@ class FileWatcherService:
             
         logger.success(f"Синхронизация завершена: {stats}")
         return stats
+
+    async def sync_from_settings(self) -> str:
+        """
+        Загружает список файлов из AppSettings и выполняет синхронизацию.
+        Возвращает строку со статистикой.
+        """
+        import json
+        from database.models import AppSettings
+        
+        async with self.session_factory() as session:
+            settings = await session.get(AppSettings, "watched_files")
+            if not settings:
+                logger.warning("Нет файлов для синхронизации в настройках")
+                return "Нет настроенных файлов"
+            
+            files_data = json.loads(settings.value)
+            
+            # Приводим к формату [{path, name}, ...]
+            if files_data and isinstance(files_data[0], str):
+                files_list = [{"path": p, "name": f"List {i+1}"} for i, p in enumerate(files_data)]
+            else:
+                files_list = files_data
+            
+            # Синхронизация
+            stats = await self.sync_files(files_list)
+            return stats
