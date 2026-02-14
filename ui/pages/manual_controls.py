@@ -22,6 +22,7 @@ class ManualControlsPage:
     async def run_sync(self, button):
         """Ручной запуск синхронизации"""
         self.is_syncing = True
+        button.props('loading')
         ui.notify('Запуск синхронизации...', type='info')
         try:
             watcher = FileWatcherService(get_session)
@@ -32,42 +33,73 @@ class ManualControlsPage:
                 scraper = get_scraper_service()
                 matches = await scraper.match_monitored_pairs_with_events(session)
                 
-            ui.notify(f'Синхронизация завершена! {stats}. Найдено совпадений: {matches}', type='positive')
-            if self.stats_label:
-                self.stats_label.text = f"{stats} | Matches: {matches}"
+            try:
+                ui.notify(f'Синхронизация завершена! {stats}. Найдено совпадений: {matches}', type='positive')
+                if self.stats_label:
+                    self.stats_label.text = f"{stats} | Matches: {matches}"
+            except:
+                pass
         finally:
             self.is_syncing = False
+            try:
+                button.props(remove='loading')
+            except:
+                pass
 
-    async def run_ohlcv_update(self, scheduler):
+    async def run_ohlcv_update(self, scheduler, button):
         """Ручной запуск обновления цен"""
         self.is_updating_ohlcv = True
+        button.props('loading')
         ui.notify('Обновление цен запущено...', type='info')
         try:
             await scheduler.market_service.update_all()
-            ui.notify('Цены обновлены!', type='positive')
+            try:
+                ui.notify('Цены обновлены!', type='positive')
+            except:
+                pass
         finally:
             self.is_updating_ohlcv = False
+            try:
+                button.props(remove='loading')
+            except:
+                pass
 
-    async def run_scraper_check(self, scheduler):
+    async def run_scraper_check(self, scheduler, button):
         """Ручной запуск проверки новостей"""
         self.is_checking_news = True
+        button.props('loading')
         ui.notify('Запущена проверка новостей на Delist/ST...', type='info')
         try:
             await scheduler.scraper_service.check_all_risks()
-            ui.notify('Проверка новостей завершена!', type='positive')
+            try:
+                ui.notify('Проверка новостей завершена!', type='positive')
+            except:
+                pass
         finally:
             self.is_checking_news = False
+            try:
+                button.props(remove='loading')
+            except:
+                pass
             
-    async def run_cmc_update(self, scheduler):
+    async def run_cmc_update(self, scheduler, button):
         """Ручной запуск обновления рангов CMC"""
         self.is_updating_ranks = True
+        button.props('loading')
         ui.notify('Обновление рангов CMC запущено...', type='info')
         try:
             # Используем сервис из планировщика или через get_cmc_service
             msg = await scheduler.cmc_service.sync_ranks()
-            ui.notify(f'Готово: {msg}', type='positive')
+            try:
+                ui.notify(f'Готово: {msg}', type='positive')
+            except:
+                pass
         finally:
             self.is_updating_ranks = False
+            try:
+                button.props(remove='loading')
+            except:
+                pass
 
     async def _clear_table(self, model, name_ru):
         """Generic method to clear a table"""
@@ -111,31 +143,37 @@ class ManualControlsPage:
 
             # --- Manual Actions ---
             ui.label().classes('text-lg font-bold')
-            with ui.row().classes('gap-2'):
-                btn_sync = ui.button('Синхронизация отслеживаемых пар', 
-                                    on_click=lambda: self.run_sync(btn_sync), 
-                                    color='grey').props('dense size=md')
-                btn_sync.bind_enabled_from(self, 'is_syncing', backward=lambda x: not x)
+            with ui.column().classes('gap-2 w-full'):
+                
+                # 1. Sync
+                with ui.row().classes('w-full items-center justify-between p-4 bg-gray-50 rounded border'):
+                    with ui.column().classes('gap-1'):
+                        ui.label('1. Синхронизация отслеживаемых пар').classes('font-bold')
+                        ui.label('Загружает список пар из файла и проверяет совпадение с уже известными событиями Delisting/ST').classes('text-xs text-gray-500')
+                    btn_sync = ui.button('Запустить', on_click=lambda: self.run_sync(btn_sync)).props('color=grey dense size=md icon=sync')
 
-                btn_ohlcv = ui.button('Обновить OHLCv', 
-                                     on_click=lambda: self.run_ohlcv_update(scheduler), 
-                                     color='grey').props('dense size=md')
-                btn_ohlcv.bind_enabled_from(self, 'is_updating_ohlcv', backward=lambda x: not x)
+                # 2. OHLCV
+                with ui.row().classes('w-full items-center justify-between p-4 bg-gray-50 rounded border'):
+                    with ui.column().classes('gap-1'):
+                        ui.label('2. Обновить OHLCv').classes('font-bold')
+                        ui.label('Скачивает OHLCv для всех активных пар, после запускается проверка на Pump/Dump и объемы').classes('text-xs text-gray-500')
+                    btn_ohlcv = ui.button('Запустить', on_click=lambda: self.run_ohlcv_update(scheduler, btn_ohlcv)).props('color=grey dense size=md icon=sync')
 
+                # 3. Scraper
                 with ui.row().classes('w-full items-center justify-between p-4 bg-gray-50 rounded border'):
                     with ui.column().classes('gap-1'):
                         ui.label('3. Проверка новостей (Delisting/ST)').classes('font-bold')
-                        ui.label('Запускает скраперы Gate.io/MEXC и API проверки').classes('text-xs text-gray-500')
+                        ui.label('Запускает скраперы Gate.io/MEXC/Binance и API проверки').classes('text-xs text-gray-500')
                     
-                    ui.button('Проверить риски', on_click=lambda: self.run_scraper_check(scheduler)).props('color=orange icon=bug_report').bind_loading(self, 'is_checking_news')
+                    btn_check = ui.button('Проверить риски', on_click=lambda: self.run_scraper_check(scheduler, btn_check)).props('color=orange icon=bug_report')
 
-                # CMC Ranks
+                # 4. CMC Ranks
                 with ui.row().classes('w-full items-center justify-between p-4 bg-gray-50 rounded border'):
                     with ui.column().classes('gap-1'):
                         ui.label('4. Обновление рангов CMC').classes('font-bold')
-                        ui.label('Загружает ранги (Top 100/500) для активных пар').classes('text-xs text-gray-500')
+                        ui.label('Загружает ранги монет с CoinMarketCap для активных пар').classes('text-xs text-gray-500')
                     
-                    ui.button('Обновить ранги', on_click=lambda: self.run_cmc_update(scheduler)).props('color=purple icon=leaderboard').bind_loading(self, 'is_updating_ranks')
+                    btn_ranks = ui.button('Обновить ранги', on_click=lambda: self.run_cmc_update(scheduler, btn_ranks)).props('color=purple icon=leaderboard')
             
             # --- Danger Zone ---
             ui.separator().classes('my-4')

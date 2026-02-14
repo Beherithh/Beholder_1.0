@@ -27,6 +27,8 @@ class CMCService:
         return setting.value if setting else None
 
     async def sync_ranks(self) -> str:
+        logger.info(f"=== Запуск обносления рангов СМС ===")
+
         """
         Обновляет ранги для всех АКТИВНЫХ пар.
         Стратегия:
@@ -42,7 +44,7 @@ class CMCService:
                 return "No API Key"
 
             # Загружаем порог ранга
-            rank_threshold = 999999
+            rank_threshold = 500
             try:
                 rt_obj = await session.get(AppSettings, "cmc_rank_threshold")
                 if rt_obj and rt_obj.value:

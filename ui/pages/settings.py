@@ -21,6 +21,8 @@ class SettingsPage:
         # Настройки Telegram
         self.tg_token = ""
         self.tg_chat_id = ""
+        self.tg_api_id = ""
+        self.tg_api_hash = ""
         
         # Состояния для кнопок управления
         self.is_syncing = False
@@ -42,7 +44,7 @@ class SettingsPage:
         
         # Настройки CoinMarketCap
         self.cmc_api_key = ""
-        self.cmc_rank_threshold = None
+        self.cmc_rank_threshold = 500 # По умолчанию 500 порог хлама по СМС рангу
         self.cmc_update_interval_days = 5
         
     async def load_settings(self):
@@ -65,6 +67,12 @@ class SettingsPage:
             
             chat_id_set = await session.get(AppSettings, "tg_chat_id")
             self.tg_chat_id = chat_id_set.value if chat_id_set else ""
+            
+            api_id_set = await session.get(AppSettings, "tg_api_id")
+            self.tg_api_id = api_id_set.value if api_id_set else ""
+            
+            api_hash_set = await session.get(AppSettings, "tg_api_hash")
+            self.tg_api_hash = api_hash_set.value if api_hash_set else ""
 
             # Загружаем настройки алертов
             async def get_val_int(key):
@@ -111,8 +119,8 @@ class SettingsPage:
             self.cmc_update_interval_days = cmc_interval if cmc_interval else 5
                 
     async def save_settings(self):
-        """Сохраняем список файлов в БД"""
         async with get_session() as session:
+            # Сохраняем список файлов в БД
             settings = await session.get(AppSettings, "watched_files")
             if not settings:
                 settings = AppSettings(key="watched_files", value="[]")
@@ -134,6 +142,20 @@ class SettingsPage:
                 session.add(chat_id_set)
             else:
                 chat_id_set.value = self.tg_chat_id
+            
+            api_id_set = await session.get(AppSettings, "tg_api_id")
+            if not api_id_set:
+                api_id_set = AppSettings(key="tg_api_id", value=self.tg_api_id)
+                session.add(api_id_set)
+            else:
+                api_id_set.value = self.tg_api_id
+            
+            api_hash_set = await session.get(AppSettings, "tg_api_hash")
+            if not api_hash_set:
+                api_hash_set = AppSettings(key="tg_api_hash", value=self.tg_api_hash)
+                session.add(api_hash_set)
+            else:
+                api_hash_set.value = self.tg_api_hash
 
             # Сохраняем алерты
             alert_map = {
@@ -205,15 +227,40 @@ class SettingsPage:
         self.files_list.append({"path": path, "name": chosen_name})
         await self.save_settings()
         path_input.value = ""
-        self.refresh_ui()
         ui.notify(f'Список добавлен: {chosen_name}, {path}', type='positive')
+        
+        # Автоматическая синхронизация сразу после добавления
+        try:
+            watcher = FileWatcherService(get_session)
+            stats = await watcher.sync_from_settings()
+            
+            # Быстрый матч с рисками
+            async with get_session() as session:
+                scraper = get_scraper_service()
+                matches = await scraper.match_monitored_pairs_with_events(session)
+            
+            ui.notify(f'Авто-синхронизация: {stats}. Найдено совпадений: {matches}', type='positive')
+        except Exception as e:
+            logger.error(f"Ошибка авто-синхронизации: {e}")
+            ui.notify('Ошибка при автоматической синхронизации', type='negative')
+
+        self.refresh_ui()
 
     async def remove_file(self, item):
         if item in self.files_list:
             self.files_list.remove(item)
             await self.save_settings()
-            self.refresh_ui()
             ui.notify(f'Удалено: {item["name"]}', type='warning')
+            
+            # Автоматическая синхронизация сразу после удаления
+            try:
+                watcher = FileWatcherService(get_session)
+                stats = await watcher.sync_from_settings()
+                ui.notify(f'Список обновлен: {stats}', type='positive')
+            except Exception as e:
+                logger.error(f"Ошибка авто-синхронизации после удаления: {e}")
+
+            self.refresh_ui()
 
     async def edit_name(self, item):
         with ui.dialog() as dialog, ui.card():
@@ -227,6 +274,7 @@ class SettingsPage:
         if new_name and new_name != item["name"]:
             item["name"] = new_name
             await self.save_settings()
+            ui.notify(f'Имя обновлено: {new_name}', type='positive')
             self.refresh_ui()
     
     def refresh_ui(self):
@@ -384,16 +432,24 @@ class SettingsPage:
                 ui.button('Тест', on_click=self.test_telegram).props('outline').classes('h-10')
                 ui.button('Сохранить', on_click=self.save_settings).classes('bg-green-600 text-white h-10')
             ui.label('Создайте бота через @BotFather и получите свой ID через @userinfobot').classes('text-xs text-gray-400')
+            
+            # --- Telegram API (Pyrogram) ---
+            ui.separator().classes('my-2')
+            ui.label('Telegram API (для чтения каналов)').classes('text-lg font-bold mb-2')
+            with ui.row().classes('w-full items-center gap-4'):
+                ui.input('API ID', placeholder='12345678').classes('w-40').bind_value(self, 'tg_api_id')
+                ui.input('API Hash', password=True, password_toggle_button=True, placeholder='0123456789abcdef...').classes('flex-grow').bind_value(self, 'tg_api_hash')
+                ui.button('Сохранить', on_click=self.save_settings).classes('bg-green-600 text-white h-10')
+            ui.label('Получите credentials на my.telegram.org → API development tools. Используется для парсинга @BinanceAnnouncements').classes('text-xs text-gray-400')
+
 
             # --- CoinMarketCap Settings ---
             ui.separator().classes('my-4')
             with ui.row().classes('items-center gap-2'):
-                ui.label('CoinMarketCap API').classes('text-xl font-bold')
-                ui.link('Получить ключ', 'https://pro.coinmarketcap.com/login', new_tab=True).classes('text-sm text-blue-500')
-            
+                ui.label('CoinMarketCap API (порог хлама по умолчаню = 500)').classes('text-xl font-bold')
             with ui.row().classes('w-full items-center gap-4'):
                 ui.input('API Key', password=True, password_toggle_button=True).classes('flex-grow').bind_value(self, 'cmc_api_key')
-                ui.number('Порог терпимости >', min=1).classes('w-32').bind_value(self, 'cmc_rank_threshold').props('dense')
+                ui.number('Порог рейтинга хлама', min=1).classes('w-32').bind_value(self, 'cmc_rank_threshold').props('dense')
                 ui.button('Сохранить', on_click=self.save_settings).classes('bg-green-600 text-white h-10')
 
             # --- Scheduler Settings ---

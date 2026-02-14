@@ -1,5 +1,6 @@
 import asyncio
 import re
+import time
 from loguru import logger
 from typing import List, Set
 from sqlmodel import select
@@ -25,11 +26,13 @@ class ScraperService:
     """
 
     GATE_DELIST_URL = "https://www.gate.io/announcements/delisted"
-    MEXC_DELIST_URL = "https://www.mexc.com/announcements/delistings"
+    MEXC_DELIST_URL = "https://www.mexc.com/announcements/delistings/spot-18"
+    BINANCE_DELIST_URL = "https://www.binance.com/en/support/announcement/delisting?c=161&navId=161"
+    KUCOIN_DELIST_URL = "https://www.kucoin.com/announcement/delistings"
     
     DELIST_TRIGGER_KEYWORDS = {"delist", "oppos", "remov", "offline", "risk", "suspend"}
-    ST_TRIGGER_KEYWORDS = {"st_tag", "ST Warning", "Assessment Zone"}
-    IGNORE_KEYWORDS = {"convert", "future", "perpetual", "option"}
+    ST_TRIGGER_KEYWORDS = {"st_tag", "ST Warning", "Assessment Zone", "Monitoring Tag"}  # Binance uses "Monitoring Tag"
+    IGNORE_KEYWORDS = {"convert", "future", "perpetual", "option", 'margin'} #margin - OK?
     
     # Регулярка для поиска ПАР в тексте (например: "ABC_USDT", "ABC/ETH", "ABCUSDT", "ICE")
     # Quote опциональна, чтобы захватывать и одиночные символы типа "ICE"
@@ -54,6 +57,12 @@ class ScraperService:
             "symbol_key": "symbol",       # Field for symbol "BTCUSDT"
             "st_key": "st",               # TRUE = ST tag assigned (risk)
         },
+        {
+            "name": "KUCOIN",
+            "url": "https://api.kucoin.com/api/v2/symbols",
+            "symbol_key": "symbol",       # Field for symbol (e.g., "BTC-USDT")
+            "st_key": "st",               # Field for ST status
+        },
     ]
 
     def __init__(self, session_factory):
@@ -77,7 +86,11 @@ class ScraperService:
         # 2. Проверяем, нужно ли отправить уведомление (даже если уровень риска тот же, но контекст/сообщение новые)
         if new_risk != RiskLevel.NORMAL:
             # Check for duplicate signal
-            sig_check = select(Signal).where(Signal.type == signal_type, Signal.raw_message == msg)
+            sig_check = select(Signal).where(
+                Signal.type == signal_type, 
+                Signal.raw_message == msg,
+                Signal.is_sent == True
+            )
             existing_sig = (await session.execute(sig_check)).first()
             
             if not existing_sig:
@@ -89,7 +102,7 @@ class ScraperService:
                 
                 # Отправка в Telegram
                 from services.notifications import send_and_log_signal
-                asyncio.create_task(send_and_log_signal(new_sig.id, msg, prefix="[ALERT]"))
+                asyncio.create_task(send_and_log_signal(new_sig.id, msg, prefix=""))
                 
                 changed = True
             else:
@@ -107,14 +120,23 @@ class ScraperService:
             options.add_argument("--disable-gpu")
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--window-size=1920,1080")
+            options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            options.add_experimental_option('useAutomationExtension', False)
             options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             
             # Инициализация драйвера (автоматически скачает нужную версию)
             driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
+            
+            # Скрытие флага автоматизации в браузере
+            driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                "source": "const newProto = navigator.__proto__; delete newProto.webdriver; navigator.__proto__ = newProto;"
+            })
+
             try:
                 driver.get(url)
-                # Даем время на выполнение JS (Cloudflare challenge и т.д.)
-                driver.implicitly_wait(5) 
+                # Даем время на выполнение JS и автоматическое прохождение Cloudflare challenge
+                time.sleep(10) 
                 return driver.page_source
             finally:
                 driver.quit()
@@ -143,7 +165,7 @@ class ScraperService:
 
             # 2. Heuristics for sidebars/related via keywords in class/id
             noise_pattern = re.compile(
-                r'(related|sidebar|menu|widget|recent|popular|recommend|footer|header|cookie|social|share|comment|banner|ad-|promo|breadcrumb|nav|tab|pagenavi)', 
+                r'(related|sidebar|menu|widget|recent|popular|recommend|footer|header|cookie|social|share|comment|banner|ad-|promo|breadcrumb|nav|pagenavi)', 
                 re.I
             )
             
@@ -158,16 +180,27 @@ class ScraperService:
             main_content = None
             
             if "mexc.com" in url:
-                # MEXC specific: usually div#content or div.article_articleContent...
-                main_content = soup.find('div', id='content') or soup.find('div', class_=re.compile(r'articleContent'))
+                # MEXC specific: расширен список селекторов
+                main_content = soup.find('div', id='content') or \
+                               soup.find('div', class_=re.compile(r'articleContent|article-content|article_content|article-detail|article-body|post-content|article_articleContent|article_articleDetailContent')) or \
+                               soup.find('div', class_='main-container')
             elif "gate." in url:
-                # Gate specific: usually div#article-detail-container
-                main_content = soup.find('div', id='article-detail-container')
+                # Gate specific
+                main_content = soup.find('div', id='article-detail-container') or \
+                               soup.find('div', class_='article-content') or \
+                               soup.find('div', class_='content')
+            elif "binance.com" in url:
+                # Binance specific - расширенный список
+                main_content = soup.find('div', id='article-detail-container') or \
+                               soup.find('div', class_=re.compile(r'rich-text-content|article-content|css-16l8z6d|announcement|post-body|detail-content')) or \
+                               soup.find('article') or \
+                               soup.find('main') or \
+                               soup.find('div', class_='content')
             
             # If we found a specific container, use it. Otherwise fall back to body.
             if main_content:
                 soup = main_content
-                logger.info(f"Targeted main content container found for {url}")
+                logger.debug(f"Targeted content found for {url}")
             else:
                 # Heuristic: Find H1 and take its container if it's large enough
                 h1 = soup.find('h1')
@@ -192,7 +225,7 @@ class ScraperService:
                 
                 # Пропускаем, если base - это ключевое слово (защита от ложных срабатываний)
                 if any(k.upper() == base_upper for k in self.IGNORE_KEYWORDS) or \
-                   base_upper in ("TRADING", "DELISTING", "PAIR", "LIST", "SUPPORT", "ZONE"):
+                   base_upper in ("TRADING", "DELISTING", "PAIR", "LIST", "SUPPORT", "ZONE", "STATUS"):
                     continue
                 # Постобработка: если quote не была захвачена отдельно, 
                 # проверяем не застряла ли она в конце base (например ICEUSDT)
@@ -203,11 +236,167 @@ class ScraperService:
                             break
                 result.add(base_upper)
             
+            if not result and soup:
+                # Если ничего не нашли, логируем начало текста для отладки
+                logger.debug(f"Extraction result empty. First 200 chars of text: {text[:200]}")
+            
             return result
         except Exception as e:
-            # logger.error(f"Failed to scan article {url}: {e}") # Reduce log noise
+            logger.error(f"Failed to scan article {url}: {e}") # Включаем лог для отладки
             return set()
-
+    
+    async def check_binance_telegram_channel(self) -> int:
+        """
+        Читает последние сообщения из канала @binance_announcements через Pyrogram.
+        Возвращает количество найденных новых событий.
+        """
+        try:
+            from pyrogram import Client
+        except ImportError:
+            logger.error("Pyrogram не установлен. Используйте: uv add pyrogram")
+            return 0
+        
+        async with self.session_factory() as session:
+            # Load credentials
+            api_id_setting = await session.get(AppSettings, "tg_api_id")
+            api_hash_setting = await session.get(AppSettings, "tg_api_hash")
+            
+            if not api_id_setting or not api_hash_setting:
+                logger.warning("Telegram API credentials не настроены. Пропуск проверки @binance_announcements")
+                return 0
+            
+            api_id = api_id_setting.value
+            api_hash = api_hash_setting.value
+            
+            if not api_id or not api_hash or api_id == "None" or api_hash == "None":
+                logger.warning("Telegram API credentials пустые. Пропуск.")
+                return 0
+            
+            # Get last processed message ID
+            last_msg_id_setting = await session.get(AppSettings, "binance_tg_last_message_id")
+            last_msg_id = int(last_msg_id_setting.value) if last_msg_id_setting and last_msg_id_setting.value else 0
+            
+            logger.info(f"Checking @binance_announcements (last message ID: {last_msg_id})...")
+            
+            new_events = 0
+            latest_id = last_msg_id
+            
+            try:
+                # Create Pyrogram client
+                app = Client(
+                    "beholder_telegram",
+                    api_id=int(api_id),
+                    api_hash=api_hash,
+                    workdir="."
+                )
+                
+                async with app:
+                    # Read last 100 messages from channel
+                    messages_count = 0
+                    async for message in app.get_chat_history("binance_announcements", limit=100):
+                        messages_count += 1
+                        
+                        if message.id <= last_msg_id:
+                            break  # Already processed
+                        
+                        if message.id > latest_id:
+                            latest_id = message.id
+                        
+                        # Support both text and caption (for images)
+                        content = message.text or message.caption or ""
+                        
+                        if not content:
+                            logger.debug(f"[BINANCE-TG] Message #{message.id} has no text/caption.")
+                            continue
+                        
+                        # Log EVERYTHING we see for debugging
+                        logger.info(f"[BINANCE-TG] Checking #{message.id}: {content[:50]}...")
+                        
+                        text_lower = content.lower()
+                        
+                        # Check ignore keywords first
+                        if any(kw in text_lower for kw in self.IGNORE_KEYWORDS):
+                            logger.debug(f"[BINANCE-TG] Message #{message.id} ignored (contains: {[kw for kw in self.IGNORE_KEYWORDS if kw in text_lower]})")
+                            continue
+                        
+                        # Check for delisting OR ST/Monitoring Tag keywords
+                        is_relevant = any(k in text_lower for k in self.DELIST_TRIGGER_KEYWORDS) or \
+                                      any(k.lower() in text_lower for k in self.ST_TRIGGER_KEYWORDS)
+                        
+                        if not is_relevant:
+                            logger.debug(f"[BINANCE-TG] Message #{message.id} not relevant (no trigger keywords). Preview: {content[:80]}")
+                            continue
+                        
+                        logger.info(f"[BINANCE-TG] Processing message #{message.id}: {content[:100]}...")
+                        
+                        # Extract pairs using existing regex
+                        pairs = set()
+                        matches = self.PAIR_PATTERN.finditer(content)
+                        
+                        for match in matches:
+                            base = match.group(1).upper()
+                            
+                            # Skip common words
+                            if base in ["TRADING", "BINANCE", "PAIR", "TOKEN", "COIN", "LIST", "SPOT"]:
+                                continue
+                            
+                            # Post-process: check if quote stuck in base
+                            for q in self.QUOTE_CURRENCIES:
+                                if base.endswith(q) and len(base) > len(q):
+                                    base = base[:-len(q)]
+                                    break
+                            
+                            pairs.add(base)
+                        
+                        if not pairs:
+                            logger.debug(f"[BINANCE-TG] No pairs found in message #{message.id}")
+                            continue
+                        
+                        # Determine event type (same logic as check_delistings_blog)
+                        event_type = DelistingEventType.DELISTING if any(k in text_lower for k in self.DELIST_TRIGGER_KEYWORDS) else DelistingEventType.ST
+                        
+                        # Store in database
+                        for symbol in pairs:
+                            # Check if already exists
+                            stmt = select(DelistingEvent).where(
+                                DelistingEvent.exchange == "BINANCE",
+                                DelistingEvent.symbol == symbol,
+                                DelistingEvent.announcement_url == f"https://t.me/binance_announcements/{message.id}"
+                            )
+                            existing = (await session.execute(stmt)).first()
+                            
+                            if not existing:
+                                event = DelistingEvent(
+                                    exchange="BINANCE",
+                                    symbol=symbol,
+                                    announcement_title=content[:200],  # First 200 chars as title
+                                    announcement_url=f"https://t.me/binance_announcements/{message.id}",
+                                    type=event_type
+                                )
+                                session.add(event)
+                                new_events += 1
+                                event_label = "delisting" if event_type == DelistingEventType.DELISTING else "ST/Monitoring Tag"
+                                logger.info(f"[BINANCE-TG] New {event_label}: {symbol}")
+                        
+                        await session.commit()
+                
+                # Update last processed message ID
+                if latest_id > last_msg_id:
+                    if not last_msg_id_setting:
+                        last_msg_id_setting = AppSettings(key="binance_tg_last_message_id", value=str(latest_id))
+                        session.add(last_msg_id_setting)
+                    else:
+                        last_msg_id_setting.value = str(latest_id)
+                    await session.commit()
+                    logger.info(f"[BINANCE-TG] Updated last message ID to {latest_id}")
+                
+                logger.info(f"[BINANCE-TG] Scanned {messages_count} messages. Found {new_events} new delisting events.")
+                return new_events
+                
+            except Exception as e:
+                logger.error(f"[BINANCE-TG] Error reading channel: {e}")
+                return 0
+    
     async def check_delistings_blog(self):
         """
         1. Парсит список статей для каждой настроенной биржи.
@@ -229,6 +418,18 @@ class ScraperService:
                 "url": self.MEXC_DELIST_URL,
                 "link_pattern": re.compile(r'/(announcements|support)/'), # MEXC links structure varies
                 "domain": "https://www.mexc.com"
+            },
+            {
+                "name": "BINANCE",
+                "url": self.BINANCE_DELIST_URL,
+                "link_pattern": re.compile(r'/announcement/'),
+                "domain": "https://www.binance.com"
+            },
+            {
+                "name": "KUCOIN",
+                "url": self.KUCOIN_DELIST_URL,
+                "link_pattern": re.compile(r'/announcement/'), # KuCoin uses direct links
+                "domain": "https://www.kucoin.com"
             }
         ]
         
@@ -261,13 +462,37 @@ class ScraperService:
                             else:
                                 continue
                                 
-                            # Пропускаем саму главную страницу списка, чтобы не скрапить всё подряд
-                            if full_url.rstrip('/') == source["url"].rstrip('/'):
+                            # Пропускаем саму главную страницу списка и пагинацию
+                            if full_url.rstrip('/') == source["url"].rstrip('/') or "/list/" in full_url:
                                 continue
                                 
                             title = link.get_text(strip=True)
                             if full_url not in unique_links and title:
                                 unique_links[full_url] = title
+                        
+                        # Дополнительный поиск для KuCoin: данные часто скрыты в <script> (JSON state)
+                        if ex_name == "KUCOIN":
+                            scripts = soup.find_all('script')
+                            for script in scripts:
+                                content = script.string
+                                if not content or '"records":[' not in content:
+                                    continue
+                                
+                                # Извлекаем title и path через регулярку (надежнее чем пытаться парсить битый JS/JSON)
+                                # Пример: {"id":242617,"title":"ST: KuCoin...","path":"/en-st-kucoin..."}
+                                matches = re.finditer(r'\{"id":\d+,"title":"([^"]+)".*?"path":"([^"]+)"', content)
+                                for match in matches:
+                                    item_title = match.group(1)
+                                    item_path = match.group(2)
+                                    
+                                    if not item_path.startswith('http'):
+                                        item_url = f"{source['domain']}/announcement{item_path}"
+                                    else:
+                                        item_url = item_path
+                                        
+                                    if item_url not in unique_links:
+                                        unique_links[item_url] = item_title
+                                        logger.debug(f"[KUCOIN-JS] Found article: {item_title}")
                         
                         logger.info(f"[{ex_name}] Found {len(unique_links)} candidate articles.")
                         
@@ -303,7 +528,11 @@ class ScraperService:
                                 continue
                                 
                             # 2.1 Определяем тип события для сохранения в БД
-                            event_type = DelistingEventType.DELISTING if is_relevant and any(k in title_lower for k in self.DELIST_TRIGGER_KEYWORDS) else DelistingEventType.ST
+                            # Если есть слово "delist" — это ВСЕГДА делистинг, даже если есть "ST"
+                            if any(k in title_lower for k in self.DELIST_TRIGGER_KEYWORDS):
+                                event_type = DelistingEventType.DELISTING
+                            else:
+                                event_type = DelistingEventType.ST
                             
                             # 3. Сохраняем найденное
                             for symbol in affected_tokens:
@@ -406,11 +635,16 @@ class ScraperService:
                     else:
                         new_risk = RiskLevel.CROSS_RISK
                         signal_type = SignalType.ST_WARNING
-                        msg_prefix = "⚠️ CROSS-EXCHANGE RISK!"
+                        msg_prefix = "⚠️ CROSS-EXCHANGE ST WARNING!"
                 
                 # Используем универсальный метод обновления риска
                 if new_risk:
-                    msg = f"{msg_prefix} Pair: {pair.symbol} ({pair.source_label}). Active: {evidence.exchange}. Article: {evidence.announcement_url}"
+                    trigger_text = ""
+                    if evidence.type == DelistingEventType.ST and "API ST tag" in (evidence.announcement_title or ""):
+                         # Извлекаем инфо о парах из заголовка ивента
+                         trigger_text = f"\n {evidence.announcement_title}"
+
+                    msg = f"{msg_prefix} Pair: {pair.symbol} Active in: {pair.source_label} \n Info from: {evidence.exchange}. Article: {evidence.announcement_url}{trigger_text}"
                     if await self._update_pair_risk(session, pair, new_risk, signal_type, msg):
                         pairs_updated += 1
 
@@ -460,13 +694,22 @@ class ScraperService:
                             
                         data = resp.json()
                         
-                        # Normalize format - MEXC returns {"symbols": [...]} while Gate returns [...]
-                        if isinstance(data, dict) and "symbols" in data:
-                            items = data["symbols"]
+                        # Normalize format:
+                        # MEXC: {"symbols": [...]}
+                        # KuCoin: {"data": [...]}
+                        # Gate.io: [...]
+                        if isinstance(data, dict):
+                            if "symbols" in data:
+                                items = data["symbols"]
+                            elif "data" in data:
+                                items = data["data"]
+                            else:
+                                logger.warning(f"[{ex_name}] Unexpected API response format (no symbols/data key)")
+                                continue
                         elif isinstance(data, list):
                             items = data
                         else:
-                            logger.warning(f"[{ex_name}] Unexpected API response format")
+                            logger.warning(f"[{ex_name}] Unexpected API response format (not dict/list)")
                             continue
                         
                         # Build Normalize Map
@@ -480,6 +723,9 @@ class ScraperService:
                             if "_" in raw_symbol:
                                 # BTC_USDT -> BTC/USDT
                                 normalized = raw_symbol.replace("_", "/")
+                            elif "-" in raw_symbol:
+                                # KuCoin: BTC-USDT -> BTC/USDT
+                                normalized = raw_symbol.replace("-", "/")
                             elif "/" in raw_symbol:
                                 # Уже в нужном формате
                                 normalized = raw_symbol
@@ -492,7 +738,15 @@ class ScraperService:
                                         normalized = f"{base}/{quote}"
                                         break
                             
-                            all_api_data[ex_name][normalized.upper()] = item
+                            # Группируем данные по базовой валюте в all_api_data
+                            base_currency = normalized.split('/')[0].upper()
+                            if base_currency not in all_api_data[ex_name]:
+                                all_api_data[ex_name][base_currency] = []
+                            
+                            all_api_data[ex_name][base_currency].append({
+                                "symbol": normalized.upper(),
+                                "item": item
+                            })
                             
                     except Exception as api_err:
                         logger.error(f"[{ex_name}] API Fetch Error: {api_err}")
@@ -504,50 +758,73 @@ class ScraperService:
                 base_currency = pair_symbol.split('/')[0]
                 
                 # --- A. Populating DelistingEvent from API (ST status) ---
-                # Проверяем все биржи на наличие ST тега для нашей монеты
+                # Проверяем ВСЕ пары для данной монеты на каждой бирже на наличие ST тега
                 for ex_name, ex_data in all_api_data.items():
-                    api_item = ex_data.get(pair_symbol)
-                    if api_item:
-                        source_cfg = next((s for s in self.API_SOURCES if s["name"] == ex_name), {})
-                        st_key = source_cfg.get("st_key", "st")
+                    # ex_data теперь имеет структуру { "BTC": [{"symbol": "BTC/USDT", "item": {...}}, ...], ... }
+                    ticker_pairs = ex_data.get(base_currency, [])
+                    
+                    st_triggering_pairs = []
+                    source_cfg = next((s for s in self.API_SOURCES if s["name"] == ex_name), {})
+                    st_key = source_cfg.get("st_key", "st")
+                    
+                    for entry in ticker_pairs:
+                        api_item = entry["item"]
                         st_value = api_item.get(st_key)
-                        
                         is_risk = (st_value == True or str(st_value).lower() == "true" or st_value == 1 or st_value == "1")
                         
                         if is_risk:
-                            # Сохраняем ивент в БД (если еще нет)
-                            # Это создаст базу для метода match_monitored_pairs_with_events
-                            stmt = select(DelistingEvent).where(
-                                DelistingEvent.exchange == ex_name,
-                                DelistingEvent.symbol == base_currency,
-                                DelistingEvent.announcement_url == source_cfg.get("url", "API"),
-                                DelistingEvent.type == DelistingEventType.ST
+                            st_triggering_pairs.append(entry["symbol"])
+                    
+                    if st_triggering_pairs:
+                        # Если нашли хоть одну пару с ST риском для этого тикера
+                        trigger_info = ", ".join(st_triggering_pairs)
+                        # Сохраняем ивент в БД (если еще нет)
+                        stmt = select(DelistingEvent).where(
+                            DelistingEvent.exchange == ex_name,
+                            DelistingEvent.symbol == base_currency,
+                            DelistingEvent.announcement_url == source_cfg.get("url", "API"),
+                            DelistingEvent.type == DelistingEventType.ST
+                        )
+                        existing_event = (await session.execute(stmt)).scalars().first()
+                        
+                        event_title = f"API ST tag: {trigger_info}"
+                        
+                        if not existing_event:
+                            new_event = DelistingEvent(
+                                exchange=ex_name,
+                                symbol=base_currency,
+                                announcement_title=event_title,
+                                announcement_url=source_cfg.get("url", "API"),
+                                type=DelistingEventType.ST
                             )
-                            if not (await session.execute(stmt)).first():
-                                new_event = DelistingEvent(
-                                    exchange=ex_name,
-                                    symbol=base_currency,
-                                    announcement_title="API Risk Status",
-                                    announcement_url=source_cfg.get("url", "API"),
-                                    type=DelistingEventType.ST
-                                )
-                                session.add(new_event)
-                                logger.info(f"[{ex_name}] New ST status detected for {base_currency}")
+                            session.add(new_event)
+                            logger.info(f"[{ex_name}] New ST status detected for ticker {base_currency} (via {trigger_info})")
+                        else:
+                            # Обновляем заголовок, если список триггеров изменился
+                            if existing_event.announcement_title != event_title:
+                                existing_event.announcement_title = event_title
+                                session.add(existing_event)
 
                 # --- B. Recovery Logic (Unique to API) ---
-                # Если пара есть на родной бирже, и статус ST=False, и текущий риск RISK_ZONE -> снимаем
-                native_data = all_api_data.get(current_ex, {}).get(pair_symbol)
-                if native_data and pair.risk_level == RiskLevel.RISK_ZONE:
+                # Если хоть одна пара для тикера на родной бирже имеет ST=True -> риск остается.
+                # Снимаем только если ВСЕ пары для этого тикера на родной бирже имеют ST=False.
+                native_ticker_pairs = all_api_data.get(current_ex, {}).get(base_currency, [])
+                if native_ticker_pairs and pair.risk_level == RiskLevel.RISK_ZONE:
                     source_cfg = next((s for s in self.API_SOURCES if s["name"] == current_ex), {})
                     st_key = source_cfg.get("st_key", "st")
-                    st_value = native_data.get(st_key)
-                    is_risk = (st_value == True or str(st_value).lower() == "true" or st_value == 1 or st_value == "1")
                     
-                    if not is_risk:
+                    any_st_active = False
+                    for entry in native_ticker_pairs:
+                        st_value = entry["item"].get(st_key)
+                        if (st_value == True or str(st_value).lower() == "true" or st_value == 1 or st_value == "1"):
+                            any_st_active = True
+                            break
+                    
+                    if not any_st_active:
                         pair.risk_level = RiskLevel.NORMAL
                         session.add(pair)
                         signals_created += 1 # Trigger commit/log
-                        logger.info(f"[{current_ex}] {pair.symbol} - ST Cleared (Recovery).")
+                        logger.info(f"[{current_ex}] {pair.symbol} - ST Cleared for ticker {base_currency} (Recovery).")
 
             # 4. Вызываем единый матчер для выставления алертов (Direct & Cross)
             # Он увидит новые записи в DelistingEvent и обновит риски/создаст сигналы.
@@ -580,7 +857,8 @@ class ScraperService:
             logger.error(f"Ошибка синхронизации файлов: {e}")
         
         # Основные проверки
-        await self.check_delistings_blog()
+        await self.check_binance_telegram_channel()  # Telegram channel (primary for Binance)
+        await self.check_delistings_blog()  # Web scraping (fallback + other exchanges)
         await self.check_api_risks()
         logger.info("=== Полная проверка рисков Delistings + ST завершена ===")
 

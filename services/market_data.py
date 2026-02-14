@@ -269,9 +269,9 @@ class MarketDataService:
                 if max_candle.timestamp < min_candle.timestamp:
                      change = (p_min / p_max - 1) * 100
                      if abs(change) >= threshold:
-                        alert_msg = f"📉 DUMP {pair.symbol} \n" \
+                        alert_msg = f"📉 DUMP <b>{pair.symbol}</b> \n" \
                                     f"({pair.exchange}): {pair.source_label}\n" \
-                                    f"{change:+.2f}% за {period_val} {period_type}\n" \
+                                    f"<b>{change:+.0f}%</b> in {period_val} {period_type}\n" \
                                     f"Min: {p_min} | Max: {p_max}"
             
             elif direction_type == "pump":
@@ -279,9 +279,9 @@ class MarketDataService:
                  if min_candle.timestamp < max_candle.timestamp:
                      change = (p_max / p_min - 1) * 100
                      if change >= threshold:
-                        alert_msg = f"📈 PUMP {pair.symbol} \n" \
+                        alert_msg = f"📈 PUMP <b>{pair.symbol}</b> \n" \
                                     f"({pair.exchange}): {pair.source_label}\n" \
-                                    f"{change:+.2f}% за {period_val} {period_type}\n" \
+                                    f"<b>{change:+.0f}%</b> in {period_val} {period_type}\n" \
                                     f"Min: {p_min} | Max: {p_max}"
 
             if alert_msg:
@@ -304,14 +304,15 @@ class MarketDataService:
             total_v_usdt = total_v_raw * rate
 
             if total_v_usdt <= v_threshold * v_period: # Умножаем порог на период, костыль?
-                v_msg = f"📊 LOW VOLUME {pair.symbol}\n" \
+                v_msg = f"📊 Low Volume <b>{pair.symbol}</b>\n" \
                         f"({pair.exchange}): {pair.source_label}\n" \
-                        f"Объем за {v_period} дн: {total_v_usdt:,.0f} USDT"
+                        f"Volume in {v_period} days: {total_v_usdt:,.0f} USDT\n" \
+                        f"<b>{total_v_usdt/v_period:,.0f}</b> USDT/day\n"    
                 
                 if rate != 1.0:
-                    v_msg += f" (курс {quote}: {rate})"
+                    v_msg += f" (quote {quote}: {rate})"
                 
-                v_msg += f"\nПорог: {v_threshold:,.0f} USDT"
+                v_msg += f"\nThreshold: {v_threshold:,.0f} USDT"
                 await self._create_signal_if_new(session, SignalType.VOLUME_ALERT, v_msg)
 
     async def _create_signal_if_new(self, session: AsyncSession, sig_type: SignalType, msg: str):
@@ -328,6 +329,7 @@ class MarketDataService:
         stmt = select(Signal).where(
             Signal.type == sig_type,
             Signal.raw_message == msg,
+            Signal.is_sent == True,
             Signal.created_at >= cutoff_time
         )
         existing = (await session.execute(stmt)).first()
@@ -342,4 +344,4 @@ class MarketDataService:
             
             from services.notifications import send_and_log_signal
             # Используем create_task чтобы не блокировать анализ
-            asyncio.create_task(send_and_log_signal(new_sig.id, msg, prefix="[ANALYSIS]"))
+            asyncio.create_task(send_and_log_signal(new_sig.id, msg, prefix=""))

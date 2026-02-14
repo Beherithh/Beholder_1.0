@@ -85,16 +85,28 @@ class FileWatcherService:
                     raw_symbol = pair_item.get("symbol", "")
                     if raw_symbol:
                         # Нормализация символа
-                        # 1. Если есть разделитель "_" -> меняем на "/" (BTC_USDT -> BTC/USDT)
-                        if "_" in raw_symbol:
-                            normalized_symbol = raw_symbol.replace("_", "/").upper()
-                        # 2. Если разделителя нет (BTCUSDT), пробуем отделить quote_currency (USDT)
-                        elif quote_currency and raw_symbol.endswith(quote_currency) and raw_symbol != quote_currency:
-                            base = raw_symbol[:-len(quote_currency)]
-                            normalized_symbol = f"{base}/{quote_currency}".upper()
-                        # 3. Иначе оставляем как есть
-                        else:
-                            normalized_symbol = raw_symbol.upper()
+                        normalized_symbol = raw_symbol.upper()
+                        
+                        # 1. Если есть разделитель "_" или "-" или "." -> меняем на "/"
+                        if any(sep in normalized_symbol for sep in ("_", "-", ".")):
+                            normalized_symbol = re.sub(r'[_\-\.]', '/', normalized_symbol)
+                        
+                        # 2. Если разделителя нет (AXSUSDT), ищем известную котируемую валюту (Quote)
+                        elif "/" not in normalized_symbol:
+                            # Сначала пробуем ту, что была в имени файла (приоритет)
+                            quotes_to_check = [quote_currency] if quote_currency else []
+                            # Затем все остальные стандартные
+                            standard_quotes = ["USDT", "BTC", "ETH", "USDC", "BNB", "fdusd", "tusd", "busd"]
+                            for q in standard_quotes:
+                                q_up = q.upper()
+                                if q_up not in quotes_to_check:
+                                    quotes_to_check.append(q_up)
+                            
+                            for q in quotes_to_check:
+                                if normalized_symbol.endswith(q) and len(normalized_symbol) > len(q):
+                                    base = normalized_symbol[:-len(q)]
+                                    normalized_symbol = f"{base}/{q}"
+                                    break
                         
                         found_pairs.add((exchange_name, normalized_symbol, path_str, label))
                     

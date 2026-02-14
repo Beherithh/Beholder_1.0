@@ -122,7 +122,7 @@ class DashboardPage:
                     elif rank_val > rank_threshold:
                         rank_color = "text-red-600 font-bold"
                     else:
-                        rank_color = "text-orange-500 font-bold"
+                        rank_color = "text-black-500 font-bold"
 
                 data_rows.append({
                     "id": pair.id,
@@ -192,6 +192,9 @@ class DashboardPage:
                     self.st_select.on('update:model-value', self.apply_filters)
                     
                     ui.button(icon='restart_alt', on_click=self.reset_filters).props('flat round dense')
+
+                # Кнопка ручного обновления
+                ui.button('Обновить данные', on_click=self.refresh_table, icon='refresh').props('rounded outline').classes('mb-2')
 
                 # Таблица данных
                 with ui.card().classes('w-full bg-white shadow-md'):
@@ -274,8 +277,7 @@ class DashboardPage:
                         </q-td>
                     ''')
 
-                # Кнопка ручного обновления
-                ui.button('Обновить данные', on_click=self.refresh_table, icon='refresh').props('rounded outline').classes('mt-4')
+
 
         @ui.page('/dashboard') # Алиас если нужно
         async def dashboard_alias():

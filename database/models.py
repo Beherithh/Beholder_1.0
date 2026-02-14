@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Optional
 from enum import Enum
 from sqlmodel import SQLModel, Field, Relationship
+from sqlalchemy import Column, Integer, ForeignKey
 
 # Enums
 class MonitoringStatus(str, Enum):
@@ -90,7 +91,7 @@ class MarketData(SQLModel, table=True):
     Исторические данные (свечи).
     """
     id: Optional[int] = Field(default=None, primary_key=True)
-    pair_id: int = Field(foreign_key="monitoredpair.id")
+    pair_id: int = Field(sa_column=Column(Integer, ForeignKey("monitoredpair.id", ondelete="CASCADE"), index=True))
     
     timestamp: datetime = Field(index=True)
     open: float
@@ -109,6 +110,8 @@ class Signal(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     
     type: SignalType
+    pair_id: Optional[int] = Field(default=None, index=True)
     raw_message: str # Текст сообщения для Telegram
     
     is_sent: bool = Field(default=False) # Отправлено ли в Telegram
+    sent_at: Optional[datetime] = Field(default=None) # Время отправки
