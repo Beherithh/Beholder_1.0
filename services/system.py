@@ -9,12 +9,13 @@ market_service: MarketDataService = None
 scraper_service: ScraperService = None
 scheduler_service: SchedulerService = None
 telegram_service: TelegramService = None
+file_watcher_service: "FileWatcherService" = None
 
 async def init_services():
     """
     Инициализирует сервисы. Должна вызываться один раз при старте приложения.
     """
-    global market_service, scraper_service, scheduler_service, telegram_service
+    global market_service, scraper_service, scheduler_service, telegram_service, file_watcher_service
     
     # 1. Market Data Service
     market_service = MarketDataService(get_session)
@@ -28,6 +29,10 @@ async def init_services():
 
     # 4. Scheduler Service (нужен market_service, scraper_service и cmc_service)
     scheduler_service = SchedulerService(market_service, scraper_service, cmc_service)
+
+    # 5. File Watcher Service
+    from services.file_watcher import FileWatcherService
+    file_watcher_service = FileWatcherService(get_session)
 
     # 4. Telegram Service + Загрузка настроек из БД
     from database.models import AppSettings
@@ -66,3 +71,8 @@ def get_telegram_service() -> TelegramService:
     if not telegram_service:
         raise RuntimeError("Services not initialized! Call init_services() first.")
     return telegram_service
+
+def get_file_watcher_service() -> "FileWatcherService":
+    if not file_watcher_service:
+        raise RuntimeError("Services not initialized! Call init_services() first.")
+    return file_watcher_service

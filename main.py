@@ -21,6 +21,11 @@ async def startup():
 
     print("Запуск сервисов...")
     await init_services()
+
+    print("Синхронизация отслеживаемых пар...")
+    from services.system import get_file_watcher_service
+    watcher = get_file_watcher_service()
+    await watcher.sync_from_settings()
     
     # Инициализация перехвата логов для UI
     from ui.pages.logs import init_logging
