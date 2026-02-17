@@ -35,43 +35,67 @@ class MarketDataService:
     async def update_pair_history(self, session: AsyncSession, exchange, pair: MonitoredPair) -> int:
         """
         Обновляет историю для одной пары, используя переданный экземпляр биржи.
-        Возвращает количество добавленных свечей.
+        В цикле загружает все доступные свечи до текущего момента.
+        Возвращает общее количество добавленных свечей.
         """
+        total_new_candles = 0
         try:
-            # 1. Вычисляем "since" (с какого момента качать)
             last_time = await self._get_last_candle_time(session, pair.id)
-            # CCXT требует timestamp в миллисекундах
-            since = int(last_time.timestamp() * 1000)
-            
-            logger.info(f"[{pair.exchange}] Скачиваем {pair.symbol} с {last_time}...")
-            
-            # 2. Скачиваем свечи (Timeframe 1h)
-            candles = await exchange.fetch_ohlcv(pair.symbol, timeframe='1h', since=since)
-            
-            new_count = 0
-            for candle in candles:
-                ts_ms, o, h, l, c, v = candle
-                candle_time = datetime.fromtimestamp(ts_ms / 1000)
+            logger.info(f"[{pair.exchange}] Начинаем догрузку {pair.symbol} с {last_time}...")
+
+            while True:
+                # CCXT требует timestamp в миллисекундах
+                since = int(last_time.timestamp() * 1000)
                 
-                # Защита от дублей: если свеча совпадает с last_time, пропускаем
-                if candle_time <= last_time:
-                    continue
+                candles = await exchange.fetch_ohlcv(pair.symbol, timeframe='1h', since=since)
+                
+                if not candles:
+                    # Если биржа вернула пустой список, значит, мы все скачали
+                    break
+
+                new_count_in_batch = 0
+                
+                for candle in candles:
+                    ts_ms, o, h, l, c, v = candle
+                    candle_time = datetime.fromtimestamp(ts_ms / 1000)
                     
-                market_data = MarketData(
-                    pair_id=pair.id,
-                    timestamp=candle_time,
-                    open=o, high=h, low=l, close=c, volume=v
-                )
-                session.add(market_data)
-                new_count += 1
-            
-            if new_count > 0:
+                    # Защита от дублей: если свеча совпадает с last_time, пропускаем
+                    if candle_time <= last_time:
+                        continue
+                        
+                    market_data = MarketData(
+                        pair_id=pair.id,
+                        timestamp=candle_time,
+                        open=o, high=h, low=l, close=c, volume=v
+                    )
+                    session.add(market_data)
+                    new_count_in_batch += 1
+                
+                if new_count_in_batch == 0:
+                    # Если мы обработали пачку, но не нашли ни одной новой свечи
+                    # (например, все были дубликатами), выходим из цикла.
+                    break
+
+                total_new_candles += new_count_in_batch
+                
+                # Обновляем last_time для следующей итерации
+                last_candle_in_batch_ts = candles[-1][0]
+                last_time = datetime.fromtimestamp(last_candle_in_batch_ts / 1000)
+                
+                logger.info(f"[{pair.exchange}] ...загружено {new_count_in_batch} свечей, последняя: {last_time}")
+
+                # Сохраняем пачку в БД
                 await session.commit()
-                logger.success(f"[{pair.exchange}] Сохранено {new_count} новых свечей для {pair.symbol}")
+                
+                # Небольшая задержка между запросами, чтобы не получить бан
+                await asyncio.sleep(exchange.rateLimit / 1000.0)
+
+            if total_new_candles > 0:
+                logger.success(f"[{pair.exchange}] Всего сохранено {total_new_candles} новых свечей для {pair.symbol}")
             else:
                 logger.info(f"[{pair.exchange}] Нет новых свечей для {pair.symbol}")
                 
-            return new_count
+            return total_new_candles
 
         except Exception as e:
             logger.error(f"Ошибка при обновлении {pair.exchange}:{pair.symbol} -> {e}")
@@ -116,13 +140,12 @@ class MarketDataService:
                     logger.info(f"Запуск сессии для {ex_name.upper()} (Пар: {len(exchange_pairs)})")
                     
                     for pair in exchange_pairs:
-                        # Открываем новую сессию БД для каждой пары (или можно одну на всех, но так безопаснее для транзакций)
+                        # Открываем новую сессию БД для каждой пары
                         async with self.session_factory() as session:
                             await self.update_pair_history(session, exchange, pair)
                         
-                        # Ручная задержка на основе rateLimit
-                        wait_ms = exchange.rateLimit
-                        await asyncio.sleep(wait_ms / 1000.0)
+                        # Дополнительная задержка между обработкой пар
+                        await asyncio.sleep(1)
                         
             except Exception as e:
                 logger.error(f"Критическая ошибка при работе с биржей {ex_name}: {e}")

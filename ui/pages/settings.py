@@ -4,19 +4,17 @@ import asyncio
 import json
 from nicegui import ui
 from loguru import logger
-from sqlmodel import select, delete
 
 from database.core import get_session
-from database.models import AppSettings, MonitoredPair, MarketData, DelistingEvent, Signal
+from database.models import AppSettings
 from services.file_watcher import FileWatcherService
-from services.system import get_scraper_service
+from services.system import get_scraper_service, get_config_service, get_scheduler
 from ui.layout import create_header
 
 class SettingsPage:
     def __init__(self):
         # Структура: [{"path": "...", "name": "..."}, ...]
         self.files_list = []
-        self.stats_label = None
         
         # Настройки Telegram
         self.tg_token = ""
@@ -24,12 +22,7 @@ class SettingsPage:
         self.tg_api_id = ""
         self.tg_api_hash = ""
         
-        # Состояния для кнопок управления
-        self.is_syncing = False
-        self.is_updating_ohlcv = False
-        self.is_checking_news = False
-        
-        # Настройки алертов (по умолчанию пустые)
+        # Настройки алертов
         self.alert_price_hours_pump_period = None
         self.alert_price_hours_dump_period = None
         self.alert_price_hours_pump_threshold = None
@@ -40,166 +33,104 @@ class SettingsPage:
         self.alert_price_days_dump_threshold = None
         self.alert_volume_days_period = None
         self.alert_volume_days_threshold = None
-        self.alert_dedup_hours = 12  # блокировка повторных алертов (по умолчанию 12 часов)
+        self.alert_dedup_hours = 12
         
         # Настройки CoinMarketCap
         self.cmc_api_key = ""
-        self.cmc_rank_threshold = 500 # По умолчанию 500 порог хлама по СМС рангу
-        self.cmc_update_interval_days = 5
+        self.cmc_rank_threshold = 500
+        
+        # Настройки планировщика
+        self.market_interval = 1
+        self.scraper_interval = 1
+        self.cmc_interval = 5
         
     async def load_settings(self):
-        """Загружаем список файлов из БД"""
-        async with get_session() as session:
-            settings = await session.get(AppSettings, "watched_files")
-            if settings:
-                data = json.loads(settings.value)
-                # Migration: Если в базе старый формат (список строк), конвертируем в словари
-                if data and isinstance(data[0], str):
-                    self.files_list = [{"path": p, "name": f"List {i+1}"} for i, p in enumerate(data)]
-                else:
-                    self.files_list = data
-            else:
-                self.files_list = []
-            
-            # Загружаем настройки Telegram
-            token_set = await session.get(AppSettings, "tg_bot_token")
-            self.tg_token = token_set.value if token_set else ""
-            
-            chat_id_set = await session.get(AppSettings, "tg_chat_id")
-            self.tg_chat_id = chat_id_set.value if chat_id_set else ""
-            
-            api_id_set = await session.get(AppSettings, "tg_api_id")
-            self.tg_api_id = api_id_set.value if api_id_set else ""
-            
-            api_hash_set = await session.get(AppSettings, "tg_api_hash")
-            self.tg_api_hash = api_hash_set.value if api_hash_set else ""
-
-            # Загружаем настройки алертов
-            async def get_val_int(key):
-                s = await session.get(AppSettings, key)
-                try:
-                    return int(float(s.value)) if s and s.value and s.value != 'None' else None
-                except: return None
-
-            async def get_val_float(key):
-                s = await session.get(AppSettings, key)
-                try:
-                    return float(s.value) if s and s.value and s.value != 'None' else None
-                except: return None
-
-            # Fallback/Migration Logic:
-            # If explicit pump/dump period is missing, try to load old "alert_price_hours_period"
-            old_h_period = await get_val_int("alert_price_hours_period")
-            old_d_period = await get_val_int("alert_price_days_period")
-
-            self.alert_price_hours_pump_period = await get_val_int("alert_price_hours_pump_period") or old_h_period
-            self.alert_price_hours_dump_period = await get_val_int("alert_price_hours_dump_period") or old_h_period
-            
-            self.alert_price_hours_pump_threshold = await get_val_float("alert_price_hours_pump_threshold")
-            self.alert_price_hours_dump_threshold = await get_val_float("alert_price_hours_dump_threshold")
-            
-            self.alert_price_days_pump_period = await get_val_int("alert_price_days_pump_period") or old_d_period
-            self.alert_price_days_dump_period = await get_val_int("alert_price_days_dump_period") or old_d_period
-            
-            self.alert_price_days_pump_threshold = await get_val_float("alert_price_days_pump_threshold")
-            self.alert_price_days_dump_threshold = await get_val_float("alert_price_days_dump_threshold")
-            self.alert_volume_days_period = await get_val_int("alert_volume_days_period")
-            self.alert_volume_days_threshold = await get_val_float("alert_volume_days_threshold")
-            
-            dedup = await get_val_int("alert_dedup_hours")
-            self.alert_dedup_hours = dedup if dedup else 12
-
-            # Загружаем настройки CMC
-            cmc_key_set = await session.get(AppSettings, "cmc_api_key")
-            self.cmc_api_key = cmc_key_set.value if cmc_key_set else ""
-            
-            self.cmc_rank_threshold = await get_val_int("cmc_rank_threshold")
-            
-            cmc_interval = await get_val_int("cmc_update_interval_days")
-            self.cmc_update_interval_days = cmc_interval if cmc_interval else 5
+        """Загружаем все настройки через ConfigService"""
+        config = get_config_service()
+        
+        # Файлы
+        self.files_list = await config.get_watched_files()
+        
+        # Telegram
+        tg_conf = await config.get_telegram_config()
+        self.tg_token = tg_conf.bot_token
+        self.tg_chat_id = tg_conf.chat_id
+        self.tg_api_id = tg_conf.api_id
+        self.tg_api_hash = tg_conf.api_hash
+        
+        # Алерты
+        alert_conf = await config.get_alert_config()
+        self.alert_price_hours_pump_period = alert_conf.h_pump_period
+        self.alert_price_hours_dump_period = alert_conf.h_dump_period
+        self.alert_price_hours_pump_threshold = alert_conf.h_pump_threshold
+        self.alert_price_hours_dump_threshold = alert_conf.h_dump_threshold
+        self.alert_price_days_pump_period = alert_conf.d_pump_period
+        self.alert_price_days_dump_period = alert_conf.d_dump_period
+        self.alert_price_days_pump_threshold = alert_conf.d_pump_threshold
+        self.alert_price_days_dump_threshold = alert_conf.d_dump_threshold
+        self.alert_volume_days_period = alert_conf.v_period
+        self.alert_volume_days_threshold = alert_conf.v_threshold
+        self.alert_dedup_hours = alert_conf.dedup_hours
+        
+        # CMC
+        cmc_conf = await config.get_cmc_config()
+        self.cmc_api_key = cmc_conf.api_key
+        self.cmc_rank_threshold = cmc_conf.rank_threshold
+        
+        # Scheduler
+        scheduler_conf = await config.get_scheduler_config()
+        self.market_interval = scheduler_conf.market_update_interval_hours
+        self.scraper_interval = scheduler_conf.scraper_interval_hours
+        self.cmc_interval = scheduler_conf.cmc_update_interval_days
                 
     async def save_settings(self):
+        """Универсальный метод сохранения всех настроек со страницы."""
         async with get_session() as session:
-            # Сохраняем список файлов в БД
-            settings = await session.get(AppSettings, "watched_files")
-            if not settings:
-                settings = AppSettings(key="watched_files", value="[]")
-                session.add(settings)
             
-            settings.value = json.dumps(self.files_list)
+            async def set_val(key, value):
+                obj = await session.get(AppSettings, key)
+                if not obj:
+                    session.add(AppSettings(key=key, value=str(value)))
+                else:
+                    obj.value = str(value)
+
+            # Сохраняем список файлов в БД
+            await set_val("watched_files", json.dumps(self.files_list))
             
             # Сохраняем настройки Telegram
-            token_set = await session.get(AppSettings, "tg_bot_token")
-            if not token_set:
-                token_set = AppSettings(key="tg_bot_token", value=self.tg_token)
-                session.add(token_set)
-            else:
-                token_set.value = self.tg_token
-
-            chat_id_set = await session.get(AppSettings, "tg_chat_id")
-            if not chat_id_set:
-                chat_id_set = AppSettings(key="tg_chat_id", value=self.tg_chat_id)
-                session.add(chat_id_set)
-            else:
-                chat_id_set.value = self.tg_chat_id
-            
-            api_id_set = await session.get(AppSettings, "tg_api_id")
-            if not api_id_set:
-                api_id_set = AppSettings(key="tg_api_id", value=self.tg_api_id)
-                session.add(api_id_set)
-            else:
-                api_id_set.value = self.tg_api_id
-            
-            api_hash_set = await session.get(AppSettings, "tg_api_hash")
-            if not api_hash_set:
-                api_hash_set = AppSettings(key="tg_api_hash", value=self.tg_api_hash)
-                session.add(api_hash_set)
-            else:
-                api_hash_set.value = self.tg_api_hash
+            await set_val("tg_bot_token", self.tg_token)
+            await set_val("tg_chat_id", self.tg_chat_id)
+            await set_val("tg_api_id", self.tg_api_id)
+            await set_val("tg_api_hash", self.tg_api_hash)
 
             # Сохраняем алерты
-            alert_map = {
-                "alert_price_hours_pump_period": str(self.alert_price_hours_pump_period),
-                "alert_price_hours_dump_period": str(self.alert_price_hours_dump_period),
-                "alert_price_hours_pump_threshold": str(self.alert_price_hours_pump_threshold),
-                "alert_price_hours_dump_threshold": str(self.alert_price_hours_dump_threshold),
-                "alert_price_days_pump_period": str(self.alert_price_days_pump_period),
-                "alert_price_days_dump_period": str(self.alert_price_days_dump_period),
-                "alert_price_days_pump_threshold": str(self.alert_price_days_pump_threshold),
-                "alert_price_days_dump_threshold": str(self.alert_price_days_dump_threshold),
-                "alert_volume_days_period": str(self.alert_volume_days_period),
-                "alert_volume_days_threshold": str(self.alert_volume_days_threshold),
-                "alert_dedup_hours": str(self.alert_dedup_hours),
-            }
-            for k, v in alert_map.items():
-                obj = await session.get(AppSettings, k)
-                if not obj:
-                    session.add(AppSettings(key=k, value=v))
-                else:
-                    obj.value = v
+            await set_val("alert_price_hours_pump_period", self.alert_price_hours_pump_period)
+            await set_val("alert_price_hours_dump_period", self.alert_price_hours_dump_period)
+            await set_val("alert_price_hours_pump_threshold", self.alert_price_hours_pump_threshold)
+            await set_val("alert_price_hours_dump_threshold", self.alert_price_hours_dump_threshold)
+            await set_val("alert_price_days_pump_period", self.alert_price_days_pump_period)
+            await set_val("alert_price_days_dump_period", self.alert_price_days_dump_period)
+            await set_val("alert_price_days_pump_threshold", self.alert_price_days_pump_threshold)
+            await set_val("alert_price_days_dump_threshold", self.alert_price_days_dump_threshold)
+            await set_val("alert_volume_days_period", self.alert_volume_days_period)
+            await set_val("alert_volume_days_threshold", self.alert_volume_days_threshold)
+            await set_val("alert_dedup_hours", self.alert_dedup_hours)
             
             # Сохраняем настройки CMC
-            cmc_key_set = await session.get(AppSettings, "cmc_api_key")
-            if not cmc_key_set:
-                session.add(AppSettings(key="cmc_api_key", value=self.cmc_api_key))
-            else:
-                cmc_key_set.value = self.cmc_api_key
-                
-            cmc_rank_threshold_set = await session.get(AppSettings, "cmc_rank_threshold")
-            if not cmc_rank_threshold_set:
-                session.add(AppSettings(key="cmc_rank_threshold", value=str(self.cmc_rank_threshold)))
-            else:
-                cmc_rank_threshold_set.value = str(self.cmc_rank_threshold)
-
-            # Интервал CMC сохраняется через селект, но для порядка можно и тут (хотя лучше не дублировать логику с UI)
-            # Селект вызывает update_cmc_interval сразу. 
-            # Оставим тут только API Key и Threshold.
+            await set_val("cmc_api_key", self.cmc_api_key)
+            await set_val("cmc_rank_threshold", self.cmc_rank_threshold)
+            
+            # Сохраняем настройки планировщика
+            await set_val("update_interval_hours", self.market_interval)
+            await set_val("scraper_interval_hours", self.scraper_interval)
+            await set_val("cmc_update_interval_days", self.cmc_interval)
 
             await session.commit()
             
-            # Обновляем сервис Telegram
-            from services.system import get_telegram_service
-            get_telegram_service().update_config(self.tg_token, self.tg_chat_id)
+        # Обновляем сервис Telegram
+        from services.system import get_telegram_service
+        get_telegram_service().update_config(self.tg_token, self.tg_chat_id)
+        ui.notify("Настройки сохранены", type="positive")
             
     async def add_file(self, path_input):
         path = path_input.value
@@ -310,81 +241,6 @@ class SettingsPage:
         path = await asyncio.get_running_loop().run_in_executor(None, _open_dialog)
         if path:
             target_input.value = path
-            
-    async def run_sync(self, button):
-        """Ручной запуск синхронизации"""
-        self.is_syncing = True
-        ui.notify('Запуск синхронизации...', type='info')
-        try:
-            watcher = FileWatcherService(get_session)
-            stats = await watcher.sync_files(self.files_list)
-            
-            # Запускаем БЫСТРЫЙ матч с историей рисков сразу после синхронизации
-            async with get_session() as session:
-                scraper = get_scraper_service()
-                matches = await scraper.match_monitored_pairs_with_events(session)
-                
-            ui.notify(f'Синхронизация завершена! {stats}. Найдено совпадений: {matches}', type='positive')
-            if self.stats_label:
-                self.stats_label.text = f"{stats} | Matches: {matches}"
-        finally:
-            self.is_syncing = False
-
-    async def run_ohlcv_update(self, scheduler):
-        """Ручной запуск обновления цен"""
-        self.is_updating_ohlcv = True
-        ui.notify('Обновление цен запущено...', type='info')
-        try:
-            await scheduler.market_service.update_all()
-            ui.notify('Цены обновлены!', type='positive')
-        finally:
-            self.is_updating_ohlcv = False
-
-    async def run_scraper_check(self, scheduler):
-        """Ручной запуск проверки новостей"""
-        self.is_checking_news = True
-        ui.notify('Запущена проверка новостей на Delist/ST...', type='info')
-        try:
-            await scheduler.scraper_service.check_all_risks()
-            ui.notify('Проверка новостей завершена!', type='positive')
-        finally:
-            self.is_checking_news = False
-
-    async def _clear_table(self, model, name_ru):
-        """Generic method to clear a table"""
-        async with get_session() as session:
-            # Считаем количество для отчета
-            result = await session.execute(select(model))
-            count_val = len(result.all())
-                
-            await session.execute(delete(model))
-            await session.commit()
-        ui.notify(f'{name_ru}: очистка выполнена, удалено {count_val} записей', type='positive')
-
-    async def _show_confirm_dialog(self, text: str) -> bool:
-        """Показывает диалог подтверждения"""
-        with ui.dialog() as dialog, ui.card():
-            ui.label(text)
-            with ui.row():
-                ui.button('Да, удалить', on_click=lambda: dialog.submit(True)).classes('bg-red-600 text-white')
-                ui.button('Отмена', on_click=lambda: dialog.submit(False))
-        return await dialog
-
-    async def clear_market_data(self):
-        if await self._show_confirm_dialog('Вы уверены? Это удалит ВСЕ исторические свечи (MarketData).'):
-            await self._clear_table(MarketData, "MarketData")
-
-    async def clear_monitored_pairs(self):
-        if await self._show_confirm_dialog('Вы уверены? Это удалит список отслеживаемых пар (MonitoredPair).'):
-            await self._clear_table(MonitoredPair, "MonitoredPair")
-
-    async def clear_signals(self):
-        if await self._show_confirm_dialog('Вы уверены? Это удалит все сигналы (история уведомлений).'):
-            await self._clear_table(Signal, "Signal (Сигналы)")
-
-    async def clear_delistings(self):
-        if await self._show_confirm_dialog('Вы уверены? Это удалит все найденные события делистинга/ST.'):
-            await self._clear_table(DelistingEvent, "DelistingEvent (События)")
 
     async def test_telegram(self):
         """Проверка связи с ТГ"""
@@ -456,54 +312,34 @@ class SettingsPage:
             ui.separator().classes('my-4')
             ui.label('Расписание').classes('text-lg font-bold')
             
+            async def on_interval_change(setting_attr: str, new_value: int, reschedule_func):
+                # Обновляем внутреннее состояние
+                setattr(self, setting_attr, new_value)
+                # Сохраняем все настройки (включая эту)
+                await self.save_settings()
+                # Перепланируем конкретную задачу
+                await reschedule_func(new_value)
+                ui.notify(f'Интервал {setting_attr} обновлен: {new_value}', type='positive')
+
             with ui.grid(columns=3):
                 # Генератор опций для селекта: {1: '1 час', 2: '2 часа', ...}
                 # Можно сделать красивее с окончаниями, но для простоты: "X ч."
                 hours_options = {h: f'{h} ч.' for h in range(1, 25)}
                 # --- OHLCV Interval ---
                 ui.label('Обновление OHLCv').classes('text-md font-medium mt-2')
-                async def on_market_change(e):
-                    val = int(e.value)
-                    await scheduler.update_market_interval(val)
-                    ui.notify(f'Interval OHLCv: {val} ч.', type='positive')
-
-                current_market_interval = 1
-                async with get_session() as session:
-                    s = await session.get(AppSettings, "update_interval_hours")
-                    if s: current_market_interval = int(s.value)
-
-              
-
+                
                 # --- Scraper Interval ---
                 ui.label('Проверка делистингов (Scraper)').classes('text-md font-medium mt-2')
-                async def on_scraper_change(e):
-                    val = e.value
-                    await scheduler.update_scraper_interval(val)
-                    ui.notify(f'Interval Scraper: {val} ч.', type='positive')
-                    
-                current_scraper_interval = 1
-                async with get_session() as session:
-                    s = await session.get(AppSettings, "scraper_interval_hours")
-                    if s: current_scraper_interval = int(s.value)
                 
                 # --- CMC Interval ---
                 ui.label('Обновление рангов CMC').classes('text-md font-medium mt-2')
-                async def on_cmc_change(e):
-                    val = int(e.value)
-                    await scheduler.update_cmc_interval(val)
-                    ui.notify(f'Interval CMC: {val} дн.', type='positive')
-
-                current_cmc_interval = 5
-                async with get_session() as session:
-                    s = await session.get(AppSettings, "cmc_update_interval_days")
-                    if s: current_cmc_interval = int(s.value)
                 
                 # Опции для дней: 1...30
                 days_options = {d: f'{d} дн.' for d in range(1, 31)}
 
-                ui.select(options=hours_options, value=current_market_interval, on_change=on_market_change).classes('w-32')
-                ui.select(options=hours_options, value=current_scraper_interval, on_change=on_scraper_change).classes('w-32')
-                ui.select(options=days_options, value=current_cmc_interval, on_change=on_cmc_change).classes('w-32')
+                ui.select(options=hours_options, value=self.market_interval, on_change=lambda e: on_interval_change('market_interval', e.value, scheduler.update_market_interval)).classes('w-32').bind_value(self, 'market_interval')
+                ui.select(options=hours_options, value=self.scraper_interval, on_change=lambda e: on_interval_change('scraper_interval', e.value, scheduler.update_scraper_interval)).classes('w-32').bind_value(self, 'scraper_interval')
+                ui.select(options=days_options, value=self.cmc_interval, on_change=lambda e: on_interval_change('cmc_interval', e.value, scheduler.update_cmc_interval)).classes('w-32').bind_value(self, 'cmc_interval')
 
             # Пояснение логики работы всех служб
             with ui.column().classes('w-full gap-2 p-3 bg-blue-50 rounded border-l-4 border-blue-400 mt-2'):

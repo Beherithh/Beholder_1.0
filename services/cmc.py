@@ -8,7 +8,6 @@ from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import MonitoredPair, MonitoringStatus, Signal, SignalType
-# from services.system import get_telegram_service # Moved to method to avoid circular import
 
 class CMCService:
     """
@@ -41,8 +40,6 @@ class CMCService:
         """
         async with self.session_factory() as session:
             # 1. Получаем уникальные базовые валюты из активных пар
-            # Предполагаем формат SYMBOL/QUOTE (BTC/USDT -> BTC)
-            # Также обрабатываем SYMBOL_QUOTE (BTC_USDT -> BTC)
             stmt = select(MonitoredPair).where(MonitoredPair.monitoring_status == MonitoringStatus.ACTIVE)
             pairs = (await session.execute(stmt)).scalars().all()
             
@@ -50,12 +47,9 @@ class CMCService:
                 return "Нет активных пар"
 
             # Карта: BaseCurrency -> List[MonitoredPair]
-            # Один тикер может быть в разных парах (BTC/USDT, BTC/ETH)
             currency_map: Dict[str, List[MonitoredPair]] = {}
             
             for pair in pairs:
-                # Извлекаем базу. Обычно это первая часть до / или _
-                # Упрощенная логика: берем до первого разделителя или целиком если нет разделителя
                 symbol = pair.symbol.upper()
                 base = symbol
                 if '/' in symbol:
@@ -97,7 +91,6 @@ class CMCService:
                             for symbol, info in data.items():
                                 coin_obj = None
                                 if isinstance(info, list):
-                                    # Берем монету с наилучшим (меньшим) рангом
                                     valid_coins = [c for c in info if c.get('cmc_rank') is not None]
                                     if valid_coins:
                                         coin_obj = min(valid_coins, key=lambda x: x['cmc_rank'])
@@ -146,10 +139,21 @@ class CMCService:
         if existing:
             return
 
+        # Распаковка названий списков из JSON
+        lists_str = pair.source_label or "Unknown"
+        try:
+            loaded = json.loads(lists_str)
+            if isinstance(loaded, list):
+                lists_str = ", ".join(loaded)
+            elif isinstance(loaded, str):
+                lists_str = loaded
+        except:
+            pass
+
         msg_text = f"⚠️ <b>Low Rank Warning</b>\n\n" \
                    f"Coin: <b>{pair.symbol}</b>\n" \
                    f"Current Rank: <b>#{rank}</b>\n" \
-                   f"Exchange: {pair.exchange}"
+                   f"Lists: {lists_str}"
         
         # Создаем сигнал
         signal = Signal(

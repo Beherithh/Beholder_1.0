@@ -8,9 +8,6 @@ from ui.pages.logs import logs_page # Register Logs page
 from ui.layout import create_header
 from services.system import init_services, get_scheduler
 
-
-
-
 async def startup():
     print("Инициализация Базы Данных...")
     await init_db()
@@ -55,4 +52,5 @@ async def startup():
 app.on_startup(startup)
 
 if __name__ in {"__main__", "__mp_main__"}:
+    # exclude="venv" удален, так как вызывает ошибку в текущей версии NiceGUI
     ui.run(title='Beholder Dashboard', port=8080, reload=True, show=False)  # show=False чтобы не открывал вкладку автоматически при рестарте
