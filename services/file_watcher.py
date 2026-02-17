@@ -13,8 +13,6 @@ class FileWatcherService:
     """
     Сервис для чтения файлов с торговыми парами и синхронизации их с Базой Данных.
     Реализует логику Soft Delete (мягкого удаления).
-    ВОЗМОЖНАЯ ПРОБЛЕМА - если валюта пары отличемся от валюты в названии файла, будет захвачено 
-    всё типо "DTCUSDC"!!! 
     """
 
     def __init__(self, session_factory):
@@ -153,8 +151,6 @@ class FileWatcherService:
                 labels_json = json.dumps(labels_list, ensure_ascii=False)
                 
                 # Исходный файл берем последний (или первый), так как поле source_file строковое.
-                # Можно хранить тоже JSON, но пока user просил только идентификацию списков.
-                # Возьмем первый попавшийся для проформы.
                 primary_file = list(data["files"])[0] 
 
                 if (exchange, symbol) in db_pairs_map:
@@ -178,7 +174,7 @@ class FileWatcherService:
                     
                     if existing_pair.source_file != primary_file:
                         existing_pair.source_file = primary_file
-                        changes_needed = True # Не совсем критично, но обновим
+                        changes_needed = True 
                         
                 else:
                     # Создание новой
@@ -209,26 +205,17 @@ class FileWatcherService:
 
     async def sync_from_settings(self) -> str:
         """
-        Загружает список файлов из AppSettings и выполняет синхронизацию.
+        Загружает список файлов из ConfigService и выполняет синхронизацию.
         Возвращает строку со статистикой.
         """
-        import json
-        from database.models import AppSettings
+        from services.system import get_config_service
         
-        async with self.session_factory() as session:
-            settings = await session.get(AppSettings, "watched_files")
-            if not settings:
-                logger.warning("Нет файлов для синхронизации в настройках")
-                return "Нет настроенных файлов"
-            
-            files_data = json.loads(settings.value)
-            
-            # Приводим к формату [{path, name}, ...]
-            if files_data and isinstance(files_data[0], str):
-                files_list = [{"path": p, "name": f"List {i+1}"} for i, p in enumerate(files_data)]
-            else:
-                files_list = files_data
-            
-            # Синхронизация
-            stats = await self.sync_files(files_list)
-            return stats
+        files_list = await get_config_service().get_watched_files()
+        
+        if not files_list:
+            logger.warning("Нет файлов для синхронизации в настройках")
+            return "Нет настроенных файлов"
+        
+        # Синхронизация
+        stats = await self.sync_files(files_list)
+        return stats

@@ -7,10 +7,7 @@ from sqlmodel import select
 from datetime import datetime
 from bs4 import BeautifulSoup
 
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service as ChromeService
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.chrome.options import Options
+import httpx 
 
 from database.models import (
     MonitoredPair, Signal, SignalType, RiskLevel, AppSettings, DelistingEvent,
@@ -18,7 +15,9 @@ from database.models import (
 )
 from database.core import get_session
 from sqlalchemy.ext.asyncio import AsyncSession
-import httpx # Still needed for API check
+
+from services.web_scraper import WebScraper
+from services.article_parser import ArticleParser
 
 class ScraperService:
     """
@@ -30,19 +29,6 @@ class ScraperService:
     BINANCE_DELIST_URL = "https://www.binance.com/en/support/announcement/delisting?c=161&navId=161"
     KUCOIN_DELIST_URL = "https://www.kucoin.com/announcement/delistings"
     
-    DELIST_TRIGGER_KEYWORDS = {"delist", "oppos", "remov", "offline", "risk", "suspend"}
-    ST_TRIGGER_KEYWORDS = {"st_tag", "ST Warning", "Assessment Zone", "Monitoring Tag"}  # Binance uses "Monitoring Tag"
-    IGNORE_KEYWORDS = {"convert", "future", "perpetual", "option", 'margin'} #margin - OK?
-    
-    # Регулярка для поиска ПАР в тексте (например: "ABC_USDT", "ABC/ETH", "ABCUSDT", "ICE")
-    # Quote опциональна, чтобы захватывать и одиночные символы типа "ICE"
-    # Исключены слова содержащие только цифры - (?![0-9]+\b)
-    # Минимальная длина 2 символа, чтобы отсечь шум типа "A", "I"
-    QUOTE_CURRENCIES = ("USDT", "BTC", "ETH", "BUSD", "BNB", "SOL", "USDC")
-    PAIR_PATTERN = re.compile(
-        r'\b(?![0-9]+\b)([A-Z0-9]{2,11})[-_/\.]?(USDT|BTC|ETH|BUSD|BNB|SOL|USDC)?\b'
-    )
-
     # API endpoints for ST/Risk checks
     API_SOURCES = [
         {
@@ -67,6 +53,8 @@ class ScraperService:
 
     def __init__(self, session_factory):
         self.session_factory = session_factory
+        self.web_scraper = WebScraper()
+        self.article_parser = ArticleParser()
     
     async def _update_pair_risk(self, session, pair: MonitoredPair, new_risk: RiskLevel, 
                                  signal_type: SignalType, msg: str) -> bool:
@@ -83,167 +71,30 @@ class ScraperService:
             session.add(pair)
             changed = True
             
-        # 2. Проверяем, нужно ли отправить уведомление (даже если уровень риска тот же, но контекст/сообщение новые)
-        if new_risk != RiskLevel.NORMAL:
-            # Check for duplicate signal
-            sig_check = select(Signal).where(
-                Signal.type == signal_type, 
-                Signal.raw_message == msg,
-                Signal.is_sent == True
-            )
-            existing_sig = (await session.execute(sig_check)).first()
-            
-            if not existing_sig:
-                logger.warning(f"Creating NEW signal: {msg}")
-                new_sig = Signal(type=signal_type, raw_message=msg)
-                session.add(new_sig)
-                await session.commit()
-                await session.refresh(new_sig)
+            # 2. Отправляем уведомление только при ПОВЫШЕНИИ риска
+            if new_risk != RiskLevel.NORMAL:
+                # Check for duplicate signal
+                sig_check = select(Signal).where(
+                    Signal.type == signal_type, 
+                    Signal.raw_message == msg,
+                    Signal.is_sent == True
+                )
+                existing_sig = (await session.execute(sig_check)).first()
                 
-                # Отправка в Telegram
-                from services.notifications import send_and_log_signal
-                asyncio.create_task(send_and_log_signal(new_sig.id, msg, prefix=""))
-                
-                changed = True
-            else:
-                logger.info(f"Signal already exists, skipping: {msg[:100]}...")
+                if not existing_sig:
+                    logger.warning(f"Creating NEW signal (risk increased): {msg}")
+                    new_sig = Signal(type=signal_type, raw_message=msg)
+                    session.add(new_sig)
+                    await session.commit()
+                    await session.refresh(new_sig)
+                    
+                    # Отправка в Telegram
+                    from services.notifications import send_and_log_signal
+                    asyncio.create_task(send_and_log_signal(new_sig.id, msg, prefix=""))
+                else:
+                    logger.info(f"Signal already exists, skipping: {msg[:100]}...")
 
         return changed
-    
-    async def _fetch_html(self, url: str) -> str:
-        """
-        Использует Selenium для обхода защиты (403/Cloudflare).
-        """
-        def _selenium_get():
-            options = Options()
-            options.add_argument("--headless=new") # Запуск без окна
-            options.add_argument("--disable-gpu")
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--window-size=1920,1080")
-            options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            options.add_experimental_option('useAutomationExtension', False)
-            options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            
-            # Инициализация драйвера (автоматически скачает нужную версию)
-            driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
-            
-            # Скрытие флага автоматизации в браузере
-            driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-                "source": "const newProto = navigator.__proto__; delete newProto.webdriver; navigator.__proto__ = newProto;"
-            })
-
-            try:
-                driver.get(url)
-                # Даем время на выполнение JS и автоматическое прохождение Cloudflare challenge
-                time.sleep(10) 
-                return driver.page_source
-            finally:
-                driver.quit()
-
-        # Запускаем в отдельном потоке, так как selenium - синхронный
-        logger.info("Запуск Chrome через Selenium...")
-        html = await asyncio.get_running_loop().run_in_executor(None, _selenium_get)
-        if not html:
-            raise ValueError("Selenium вернул пустой HTML")
-        return html
-
-    async def _extract_pairs_from_article(self, url: str) -> Set[str]:
-        """
-        Заходит внутрь статьи и ищет торговые пары.
-        Возвращает набор найденных БАЗОВЫХ валют (например {"TIME", "PLAN"} из "TIME_USDT")
-        """
-        logger.info(f"Deep scan: {url}")
-        try:
-            html = await self._fetch_html(url) # Используем тот же Selenium метод
-            soup = BeautifulSoup(html, 'html.parser')
-            
-            # --- Cleaning DOM from Noise ---
-            # 1. Remove standard non-content tags
-            for tag in soup(["script", "style", "nav", "header", "footer", "aside", "iframe", "noscript"]):
-                tag.decompose()
-
-            # 2. Heuristics for sidebars/related via keywords in class/id
-            noise_pattern = re.compile(
-                r'(related|sidebar|menu|widget|recent|popular|recommend|footer|header|cookie|social|share|comment|banner|ad-|promo|breadcrumb|nav|pagenavi)', 
-                re.I
-            )
-            
-            for tag in list(soup.find_all(attrs={"class": noise_pattern})):
-                tag.decompose()
-                
-            for tag in list(soup.find_all(attrs={"id": noise_pattern})):
-                tag.decompose()
-
-            # 3. Targeted extraction of main content (Exchange specific)
-            # This is the most effective way to avoid sidebar noise
-            main_content = None
-            
-            if "mexc.com" in url:
-                # MEXC specific: расширен список селекторов
-                main_content = soup.find('div', id='content') or \
-                               soup.find('div', class_=re.compile(r'articleContent|article-content|article_content|article-detail|article-body|post-content|article_articleContent|article_articleDetailContent')) or \
-                               soup.find('div', class_='main-container')
-            elif "gate." in url:
-                # Gate specific
-                main_content = soup.find('div', id='article-detail-container') or \
-                               soup.find('div', class_='article-content') or \
-                               soup.find('div', class_='content')
-            elif "binance.com" in url:
-                # Binance specific - расширенный список
-                main_content = soup.find('div', id='article-detail-container') or \
-                               soup.find('div', class_=re.compile(r'rich-text-content|article-content|css-16l8z6d|announcement|post-body|detail-content')) or \
-                               soup.find('article') or \
-                               soup.find('main') or \
-                               soup.find('div', class_='content')
-            
-            # If we found a specific container, use it. Otherwise fall back to body.
-            if main_content:
-                soup = main_content
-                logger.debug(f"Targeted content found for {url}")
-            else:
-                # Heuristic: Find H1 and take its container if it's large enough
-                h1 = soup.find('h1')
-                if h1:
-                    parent = h1.parent
-                    # If parent is just a wrapper, maybe go one level up
-                    if len(parent.get_text()) < 200 and parent.parent:
-                        parent = parent.parent
-                    soup = parent
-            
-            text = soup.get_text(" ", strip=True) 
-            
-            # Ищем пары вида XXX_USDT или просто XX
-            raw_matches = self.PAIR_PATTERN.finditer(text)
-            
-            result = set()
-            for match in raw_matches:
-                base = match.group(1)
-                quote = match.group(2)
-                
-                base_upper = base.upper()
-                
-                # Пропускаем, если base - это ключевое слово (защита от ложных срабатываний)
-                if any(k.upper() == base_upper for k in self.IGNORE_KEYWORDS) or \
-                   base_upper in ("TRADING", "DELISTING", "PAIR", "LIST", "SUPPORT", "ZONE", "STATUS"):
-                    continue
-                # Постобработка: если quote не была захвачена отдельно, 
-                # проверяем не застряла ли она в конце base (например ICEUSDT)
-                if not quote:
-                    for q in self.QUOTE_CURRENCIES:
-                        if base_upper.endswith(q) and len(base_upper) > len(q):
-                            base_upper = base_upper[:-len(q)]
-                            break
-                result.add(base_upper)
-            
-            if not result and soup:
-                # Если ничего не нашли, логируем начало текста для отладки
-                logger.debug(f"Extraction result empty. First 200 chars of text: {text[:200]}")
-            
-            return result
-        except Exception as e:
-            logger.error(f"Failed to scan article {url}: {e}") # Включаем лог для отладки
-            return set()
     
     async def check_binance_telegram_channel(self) -> int:
         """
@@ -256,22 +107,15 @@ class ScraperService:
             logger.error("Pyrogram не установлен. Используйте: uv add pyrogram")
             return 0
         
+        # Получаем конфиг через ConfigService
+        from services.system import get_config_service
+        tg_conf = await get_config_service().get_telegram_config()
+        
+        if not tg_conf.api_id or not tg_conf.api_hash:
+            logger.warning("Telegram API credentials не настроены. Пропуск проверки @binance_announcements")
+            return 0
+            
         async with self.session_factory() as session:
-            # Load credentials
-            api_id_setting = await session.get(AppSettings, "tg_api_id")
-            api_hash_setting = await session.get(AppSettings, "tg_api_hash")
-            
-            if not api_id_setting or not api_hash_setting:
-                logger.warning("Telegram API credentials не настроены. Пропуск проверки @binance_announcements")
-                return 0
-            
-            api_id = api_id_setting.value
-            api_hash = api_hash_setting.value
-            
-            if not api_id or not api_hash or api_id == "None" or api_hash == "None":
-                logger.warning("Telegram API credentials пустые. Пропуск.")
-                return 0
-            
             # Get last processed message ID
             last_msg_id_setting = await session.get(AppSettings, "binance_tg_last_message_id")
             last_msg_id = int(last_msg_id_setting.value) if last_msg_id_setting and last_msg_id_setting.value else 0
@@ -285,8 +129,8 @@ class ScraperService:
                 # Create Pyrogram client
                 app = Client(
                     "beholder_telegram",
-                    api_id=int(api_id),
-                    api_hash=api_hash,
+                    api_id=int(tg_conf.api_id),
+                    api_hash=tg_conf.api_hash,
                     workdir="."
                 )
                 
@@ -306,54 +150,32 @@ class ScraperService:
                         content = message.text or message.caption or ""
                         
                         if not content:
-                            logger.debug(f"[BINANCE-TG] Message #{message.id} has no text/caption.")
                             continue
-                        
-                        # Log EVERYTHING we see for debugging
-                        logger.info(f"[BINANCE-TG] Checking #{message.id}: {content[:50]}...")
                         
                         text_lower = content.lower()
                         
                         # Check ignore keywords first
-                        if any(kw in text_lower for kw in self.IGNORE_KEYWORDS):
-                            logger.debug(f"[BINANCE-TG] Message #{message.id} ignored (contains: {[kw for kw in self.IGNORE_KEYWORDS if kw in text_lower]})")
+                        if any(kw in text_lower for kw in self.article_parser.IGNORE_KEYWORDS):
                             continue
                         
                         # Check for delisting OR ST/Monitoring Tag keywords
-                        is_relevant = any(k in text_lower for k in self.DELIST_TRIGGER_KEYWORDS) or \
-                                      any(k.lower() in text_lower for k in self.ST_TRIGGER_KEYWORDS)
+                        is_relevant = any(k in text_lower for k in self.article_parser.DELIST_TRIGGER_KEYWORDS) or \
+                                      any(k.lower() in text_lower for k in self.article_parser.ST_TRIGGER_KEYWORDS)
                         
                         if not is_relevant:
-                            logger.debug(f"[BINANCE-TG] Message #{message.id} not relevant (no trigger keywords). Preview: {content[:80]}")
                             continue
                         
                         logger.info(f"[BINANCE-TG] Processing message #{message.id}: {content[:100]}...")
                         
-                        # Extract pairs using existing regex
-                        pairs = set()
-                        matches = self.PAIR_PATTERN.finditer(content)
-                        
-                        for match in matches:
-                            base = match.group(1).upper()
-                            
-                            # Skip common words
-                            if base in ["TRADING", "BINANCE", "PAIR", "TOKEN", "COIN", "LIST", "SPOT"]:
-                                continue
-                            
-                            # Post-process: check if quote stuck in base
-                            for q in self.QUOTE_CURRENCIES:
-                                if base.endswith(q) and len(base) > len(q):
-                                    base = base[:-len(q)]
-                                    break
-                            
-                            pairs.add(base)
+                        # Extract pairs using ArticleParser
+                        pairs = self.article_parser.extract_pairs_from_text(content)
                         
                         if not pairs:
                             logger.debug(f"[BINANCE-TG] No pairs found in message #{message.id}")
                             continue
                         
-                        # Determine event type (same logic as check_delistings_blog)
-                        event_type = DelistingEventType.DELISTING if any(k in text_lower for k in self.DELIST_TRIGGER_KEYWORDS) else DelistingEventType.ST
+                        # Determine event type
+                        event_type = DelistingEventType.DELISTING if any(k in text_lower for k in self.article_parser.DELIST_TRIGGER_KEYWORDS) else DelistingEventType.ST
                         
                         # Store in database
                         for symbol in pairs:
@@ -444,7 +266,7 @@ class ScraperService:
                     logger.info(f"Checking {ex_name} at {source['url']}...")
                     
                     try:
-                        html = await self._fetch_html(source["url"])
+                        html = await self.web_scraper.fetch_html(source["url"])
                         soup = BeautifulSoup(html, 'html.parser')
                         
                         # Ищем все ссылки, подходящие под паттерн статьи
@@ -478,8 +300,6 @@ class ScraperService:
                                 if not content or '"records":[' not in content:
                                     continue
                                 
-                                # Извлекаем title и path через регулярку (надежнее чем пытаться парсить битый JS/JSON)
-                                # Пример: {"id":242617,"title":"ST: KuCoin...","path":"/en-st-kucoin..."}
                                 matches = re.finditer(r'\{"id":\d+,"title":"([^"]+)".*?"path":"([^"]+)"', content)
                                 for match in matches:
                                     item_title = match.group(1)
@@ -501,12 +321,12 @@ class ScraperService:
                             title_lower = title.lower()
                             
                             # Проверяем на исключаемые слова (convert, futures)
-                            if any(k in title_lower for k in self.IGNORE_KEYWORDS):
+                            if any(k in title_lower for k in self.article_parser.IGNORE_KEYWORDS):
                                 continue
                                 
                             # Проверяем на ключевые слова (Delisting или ST)
-                            is_relevant = any(k in title_lower for k in self.DELIST_TRIGGER_KEYWORDS) or \
-                                          any(k.lower() in title_lower for k in self.ST_TRIGGER_KEYWORDS)
+                            is_relevant = any(k in title_lower for k in self.article_parser.DELIST_TRIGGER_KEYWORDS) or \
+                                          any(k.lower() in title_lower for k in self.article_parser.ST_TRIGGER_KEYWORDS)
                             
                             if not is_relevant:
                                 continue 
@@ -515,21 +335,20 @@ class ScraperService:
                             stmt_url = select(DelistingEvent).where(DelistingEvent.announcement_url == url)
                             existing_url = (await session.execute(stmt_url)).first()
                             if existing_url:
-                                # logger.info(f"[{ex_name}] Skipping already processed article: {title}")
                                 continue
 
                             logger.info(f"[{ex_name}] Analyzing article: {title}")
                             
                             # 2. Заходим внутрь (Deep Scan)
-                            affected_tokens = await self._extract_pairs_from_article(url)
+                            article_html = await self.web_scraper.fetch_html(url)
+                            affected_tokens = self.article_parser.extract_pairs_from_html(article_html, url)
                             
                             if not affected_tokens:
                                 logger.warning(f"[{ex_name}] '{title}' - Pairs not found.")
                                 continue
                                 
                             # 2.1 Определяем тип события для сохранения в БД
-                            # Если есть слово "delist" — это ВСЕГДА делистинг, даже если есть "ST"
-                            if any(k in title_lower for k in self.DELIST_TRIGGER_KEYWORDS):
+                            if any(k in title_lower for k in self.article_parser.DELIST_TRIGGER_KEYWORDS):
                                 event_type = DelistingEventType.DELISTING
                             else:
                                 event_type = DelistingEventType.ST
@@ -582,10 +401,6 @@ class ScraperService:
 
         # Собираем все базовые валюты для запроса
         bases = list({p.symbol.split('/')[0] for p in active_pairs})
-                
-                # SQLite limit is usually 999 vars, splitting chunks if necessary or just fetch all recent?
-                # Для надежности и простоты, если база небольшая, сделаем IN. Если монет тысячи - надо чанками.
-                # Пока предполагаем разумное количество (<500).
         
         # Строим карту {base_currency: [events]}
         events_map = {}
@@ -601,7 +416,6 @@ class ScraperService:
                         events_map[ev.symbol] = []
                     events_map[ev.symbol].append(ev)
 
-        signals_created = 0
         pairs_updated = 0
         
         for pair in active_pairs:
@@ -861,4 +675,3 @@ class ScraperService:
         await self.check_delistings_blog()  # Web scraping (fallback + other exchanges)
         await self.check_api_risks()
         logger.info("=== Полная проверка рисков Delistings + ST завершена ===")
-

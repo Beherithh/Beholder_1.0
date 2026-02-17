@@ -3,18 +3,19 @@ import ccxt.async_support as ccxt
 from datetime import datetime, timedelta
 from typing import List, Dict
 from loguru import logger
-from sqlmodel import select, desc, func
-from database.models import MonitoredPair, MarketData, AppSettings, Signal, SignalType
+from sqlmodel import select, desc
+from database.models import MonitoredPair, MarketData
 from sqlalchemy.ext.asyncio import AsyncSession
+from services.alert_engine import AlertEngine
 
 class MarketDataService:
     """
     Сервис для загрузки рыночных данных (свечей) через CCXT.
-    Использует асинхронность для предотвращения зависания интерфейса во время сетевых запросов.
     """
     
     def __init__(self, session_factory):
         self.session_factory = session_factory
+        self.alert_engine = AlertEngine(session_factory)
     
     async def _get_last_candle_time(self, session: AsyncSession, pair_id: int) -> datetime:
         """
@@ -119,8 +120,7 @@ class MarketDataService:
                         async with self.session_factory() as session:
                             await self.update_pair_history(session, exchange, pair)
                         
-                        # Ручная задержка на основе rateLimit, если enableRateLimit вдруг не отработал как ожидалось
-                        # exchange.rateLimit в миллисекундах
+                        # Ручная задержка на основе rateLimit
                         wait_ms = exchange.rateLimit
                         await asyncio.sleep(wait_ms / 1000.0)
                         
@@ -137,40 +137,11 @@ class MarketDataService:
         Проверка условий алертов изменения цен и объёма для всех активных пар.
         """
         logger.info("Запуск анализа рыночных данных на алерты...")
+        
+        from services.system import get_config_service
+        config = await get_config_service().get_alert_config()
+
         async with self.session_factory() as session:
-            # 1. Загружаем настройки алертов
-            async def get_val_int(key):
-                s = await session.get(AppSettings, key)
-                try: 
-                    return int(float(s.value)) if s and s.value and s.value != 'None' else None
-                except: return None
-
-            async def get_val_float(key):
-                s = await session.get(AppSettings, key)
-                try:
-                    return float(s.value) if s and s.value and s.value != 'None' else None
-                except: return None
-
-            # Fallback для старых ключей если новые не заданы (хотя UI уже должен был мигрировать)
-            # Но здесь читаем напрямую из БД, так что полезно иметь фоллбек
-            old_h_period = await get_val_int("alert_price_hours_period")
-            old_d_period = await get_val_int("alert_price_days_period")
-
-            config = {
-                "h_pump_period": await get_val_int("alert_price_hours_pump_period") or old_h_period,
-                "h_dump_period": await get_val_int("alert_price_hours_dump_period") or old_h_period,
-                "h_pump_threshold": await get_val_float("alert_price_hours_pump_threshold"),
-                "h_dump_threshold": await get_val_float("alert_price_hours_dump_threshold"),
-                
-                "d_pump_period": await get_val_int("alert_price_days_pump_period") or old_d_period,
-                "d_dump_period": await get_val_int("alert_price_days_dump_period") or old_d_period,
-                "d_pump_threshold": await get_val_float("alert_price_days_pump_threshold"),
-                "d_dump_threshold": await get_val_float("alert_price_days_dump_threshold"),
-                
-                "v_period": await get_val_int("alert_volume_days_period"),
-                "v_threshold": await get_val_float("alert_volume_days_threshold"),
-            }
-
             # 2. Получаем все активные пары
             result = await session.execute(select(MonitoredPair).where(MonitoredPair.monitoring_status == "active"))
             pairs = result.scalars().all()
@@ -179,7 +150,8 @@ class MarketDataService:
             rates = await self._get_quote_rates(pairs)
 
             for pair in pairs:
-                await self._check_price_vol_alerts(session, pair, config, rates)
+                # Делегируем анализ AlertEngine
+                await self.alert_engine.analyze_pair(session, pair, config, rates)
 
     async def _get_quote_rates(self, pairs: List[MonitoredPair]) -> Dict[str, float]:
         """
@@ -215,133 +187,3 @@ class MarketDataService:
             logger.error(f"Критическая ошибка при получении курсов валют: {e}")
             
         return rates
-
-    async def _check_price_vol_alerts(self, session: AsyncSession, pair: MonitoredPair, config: dict, rates: dict):
-        """Проверка алертов изменения цен и объёма для конкретной пары"""
-        now = datetime.utcnow()
-
-        # --- Алерты по цене (Часы и Дни) ---
-        # Теперь 4 отдельных проверки
-        checks = [
-            ("hours", "pump", config["h_pump_period"], config["h_pump_threshold"]),
-            ("hours", "dump", config["h_dump_period"], config["h_dump_threshold"]),
-            ("days", "pump", config["d_pump_period"], config["d_pump_threshold"]),
-            ("days", "dump", config["d_dump_period"], config["d_dump_threshold"]),
-        ]
-
-        for period_type, direction_type, period_val, threshold in checks:
-            if period_val is None or threshold is None or threshold <= 0:
-                continue
-            
-            delta = timedelta(hours=period_val) if period_type == "hours" else timedelta(days=period_val)
-            since_time = now - delta
-            
-            # Берем все свечи за период
-            stmt = select(MarketData).where(
-                MarketData.pair_id == pair.id,
-                MarketData.timestamp >= since_time
-            ).order_by(MarketData.timestamp.asc())
-            candles = (await session.execute(stmt)).scalars().all()
-            
-            if len(candles) < 2: continue
-            
-            # Ищем Min и Max
-            min_candle = min(candles, key=lambda x: x.low)
-            max_candle = max(candles, key=lambda x: x.high)
-            
-            p_min = min_candle.low
-            p_max = max_candle.high
-            
-            if p_max == 0 or p_min == 0: continue
-            
-            change = 0.0
-            alert_msg = ""
-            
-            if direction_type == "dump":
-                # Для дампа нас интересует падение от Максимума до (текущего или минимума).
-                # Алгоритм "Max -> Min" (если Max был раньше Min) или просто Drop from High?
-                # Старая логика: if max_candle.timestamp < min_candle.timestamp
-                # Но теперь у нас разный период.
-                # Давайте сделаем проще и надежнее: Drop from Max in period.
-                # Находим Max. Смотрим минимальную цену ПОСЛЕ Max.
-                
-                # Вариант "как было":
-                if max_candle.timestamp < min_candle.timestamp:
-                     change = (p_min / p_max - 1) * 100
-                     if abs(change) >= threshold:
-                        alert_msg = f"📉 DUMP <b>{pair.symbol}</b> \n" \
-                                    f"({pair.exchange}): {pair.source_label}\n" \
-                                    f"<b>{change:+.0f}%</b> in {period_val} {period_type}\n" \
-                                    f"Min: {p_min} | Max: {p_max}"
-            
-            elif direction_type == "pump":
-                # Для пампа: Min -> Max (если Min был раньше Max)
-                 if min_candle.timestamp < max_candle.timestamp:
-                     change = (p_max / p_min - 1) * 100
-                     if change >= threshold:
-                        alert_msg = f"📈 PUMP <b>{pair.symbol}</b> \n" \
-                                    f"({pair.exchange}): {pair.source_label}\n" \
-                                    f"<b>{change:+.0f}%</b> in {period_val} {period_type}\n" \
-                                    f"Min: {p_min} | Max: {p_max}"
-
-            if alert_msg:
-                await self._create_signal_if_new(session, SignalType.PRICE_CHANGE, alert_msg)
-
-        # --- Алерт по объему (Дни) ---
-        v_period = config["v_period"]
-        v_threshold = config["v_threshold"]
-        if v_period and v_threshold > 0:
-            since_v = now - timedelta(days=v_period)
-            stmt_v = select(func.sum(MarketData.volume * MarketData.close)).where(
-                MarketData.pair_id == pair.id,
-                MarketData.timestamp >= since_v
-            )
-            total_v_raw = (await session.execute(stmt_v)).scalar() or 0.0
-            
-            # Конвертируем в USDT если нужно
-            quote = pair.symbol.split('/')[1] if '/' in pair.symbol else "USDT"
-            rate = rates.get(quote, 1.0)
-            total_v_usdt = total_v_raw * rate
-
-            if total_v_usdt <= v_threshold * v_period: # Умножаем порог на период, костыль?
-                v_msg = f"📊 Low Volume <b>{pair.symbol}</b>\n" \
-                        f"({pair.exchange}): {pair.source_label}\n" \
-                        f"Volume in {v_period} days: {total_v_usdt:,.0f} USDT\n" \
-                        f"<b>{total_v_usdt/v_period:,.0f}</b> USDT/day\n"    
-                
-                if rate != 1.0:
-                    v_msg += f" (quote {quote}: {rate})"
-                
-                v_msg += f"\nThreshold: {v_threshold:,.0f} USDT"
-                await self._create_signal_if_new(session, SignalType.VOLUME_ALERT, v_msg)
-
-    async def _create_signal_if_new(self, session: AsyncSession, sig_type: SignalType, msg: str):
-        """Создает сигнал в БД и отправляет в ТГ, если такого сообщения еще не было за последние N часов"""
-        # Получаем настройку окна дедупликации
-        dedup_setting = await session.get(AppSettings, "alert_dedup_hours")
-        try:
-            dedup_hours = int(float(dedup_setting.value)) if dedup_setting and dedup_setting.value else 12
-        except:
-            dedup_hours = 12
-        
-        # Проверяем дубликат за последние N часов
-        cutoff_time = datetime.utcnow() - timedelta(hours=dedup_hours)
-        stmt = select(Signal).where(
-            Signal.type == sig_type,
-            Signal.raw_message == msg,
-            Signal.is_sent == True,
-            Signal.created_at >= cutoff_time
-        )
-        existing = (await session.execute(stmt)).first()
-        
-        if not existing:
-            new_sig = Signal(type=sig_type, raw_message=msg)
-            session.add(new_sig)
-            await session.commit()
-            await session.refresh(new_sig)
-            
-            logger.warning(f"NEW ANALYSIS SIGNAL: {msg}")
-            
-            from services.notifications import send_and_log_signal
-            # Используем create_task чтобы не блокировать анализ
-            asyncio.create_task(send_and_log_signal(new_sig.id, msg, prefix=""))

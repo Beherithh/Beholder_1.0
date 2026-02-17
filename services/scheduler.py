@@ -1,7 +1,6 @@
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from loguru import logger
-import json
 from sqlmodel import select
 
 from database.models import AppSettings
@@ -24,10 +23,6 @@ class SchedulerService:
         self.job_id_market = "market_data_update"
         self.job_id_scraper = "scraper_check"
         self.job_id_cmc = "cmc_rank_update"
-        
-        # Значения по умолчанию
-        self.default_interval_hours = 1
-        self.start_at_minute = 5 
 
     def start(self):
         if not self.scheduler.running:
@@ -36,34 +31,23 @@ class SchedulerService:
 
     async def schedule_all(self):
         """
-        Запускает все периодические задачи.
+        Запускает все периодические задачи на основе настроек из ConfigService.
         """
-        await self.schedule_market_update()
-        await self.schedule_scraper_check()
-        await self.schedule_cmc_update()
+        from services.system import get_config_service
+        config = await get_config_service().get_scheduler_config()
 
-    async def _schedule_job_from_settings(self, job_id, func, setting_key, default_interval, minute_val, log_name):
-        """
-        Универсальный метод для планирования задачи на основе настройки из БД.
-        """
-        interval = default_interval
-        
-        async with get_session() as session:
-            settings_obj = await session.get(AppSettings, setting_key)
-            if settings_obj:
-                try:
-                    val = int(settings_obj.value)
-                    if 1 <= val <= 1000: # Расширен диапазон для дней
-                        interval = val
-                except ValueError:
-                    pass
+        await self.schedule_market_update(config.market_update_interval_hours)
+        await self.schedule_scraper_check(config.scraper_interval_hours)
+        await self.schedule_cmc_update(config.cmc_update_interval_days)
 
-        # Удаляем старую задачу если есть
+    def _schedule_job(self, job_id, func, interval_hours, minute_val, log_name):
+        """Универсальный метод для планирования задачи."""
+        # Удаляем старую задачу, если она есть
         if self.scheduler.get_job(job_id):
             self.scheduler.remove_job(job_id)
             
-        # Fix for APScheduler: Handle 24h interval (once a day) vs hourly
-        cron_hour = '*' if interval == 1 else ('0' if interval == 24 else f"*/{interval}")
+        # APScheduler: 24h = раз в день, */N = каждые N часов, * = каждый час
+        cron_hour = '*' if interval_hours == 1 else ('0' if interval_hours == 24 else f"*/{interval_hours}")
             
         self.scheduler.add_job(
             func,
@@ -71,51 +55,34 @@ class SchedulerService:
             id=job_id,
             replace_existing=True
         )
-        logger.info(f"{log_name}: Каждые {interval} ч. (в {minute_val} мин)")
+        logger.info(f"{log_name}: Каждые {interval_hours} ч. (в {minute_val} мин)")
 
-    async def schedule_scraper_check(self):
-        """
-        Запуск скрапера раз в час (или конфигурируемо).
-        """
-        await self._schedule_job_from_settings(
+    async def schedule_scraper_check(self, interval_hours: int):
+        """Планирование задачи скрапера."""
+        self._schedule_job(
             job_id=self.job_id_scraper,
             func=self.scraper_service.check_all_risks,
-            setting_key="scraper_interval_hours",
-            default_interval=1,
-            minute_val=15, # :15 минут для скрапера
+            interval_hours=interval_hours,
+            minute_val=15, # :15 для скрапера
             log_name="Планирование скрапера"
         )
 
-    async def schedule_market_update(self):
-        """
-        Читает настройки из БД и (пере)запускает задачу обновления свечей.
-        """
-        await self._schedule_job_from_settings(
+    async def schedule_market_update(self, interval_hours: int):
+        """Планирование задачи обновления свечей."""
+        self._schedule_job(
             job_id=self.job_id_market,
             func=self.market_service.update_all,
-            setting_key="update_interval_hours",
-            default_interval=self.default_interval_hours,
-            minute_val=self.start_at_minute,
+            interval_hours=interval_hours,
+            minute_val=5, # :05 для свечей
             log_name="Планирование обновления рынка"
         )
 
-    async def schedule_cmc_update(self):
-        """
-        Запуск обновления рангов CMC.
-        Интервал в ДНЯХ.
-        """
-        interval_days = 5
-        async with get_session() as session:
-            s = await session.get(AppSettings, "cmc_update_interval_days")
-            if s:
-                try: interval_days = int(s.value)
-                except: pass
-        
-        # Удаляем старую задачу
+    async def schedule_cmc_update(self, interval_days: int):
+        """Планирование обновления рангов CMC (интервал в днях)."""
         if self.scheduler.get_job(self.job_id_cmc):
             self.scheduler.remove_job(self.job_id_cmc)
 
-        # Запускаем раз в N дней. Время - например 04:30 утра (чтобы не мешать другим)
+        # Запускаем раз в N дней в 04:30
         self.scheduler.add_job(
             self.cmc_service.sync_ranks,
             trigger=CronTrigger(day=f"*/{interval_days}", hour="4", minute="30"),
@@ -124,50 +91,37 @@ class SchedulerService:
         )
         logger.info(f"Планирование CMC: Каждые {interval_days} дн. (в 04:30)")
 
+    async def _update_setting_and_reschedule(self, key: str, value: int, min_val: int, max_val: int, reschedule_func):
+        """Универсальный метод для UI: сохраняет настройку и перезапускает задачу."""
+        if not (min_val <= value <= max_val):
+            logger.warning(f"Некорректный интервал: {value}")
+            return
+
+        async with get_session() as session:
+            setting = await session.get(AppSettings, key)
+            if not setting:
+                setting = AppSettings(key=key, value=str(value))
+                session.add(setting)
+            else:
+                setting.value = str(value)
+            await session.commit()
+            
+        await reschedule_func(value)
+
     async def update_cmc_interval(self, new_days: int):
         """Метод для UI"""
-        if new_days < 1: return
-        async with get_session() as session:
-            s = await session.get(AppSettings, "cmc_update_interval_days")
-            if not s: session.add(AppSettings(key="cmc_update_interval_days", value=str(new_days)))
-            else: s.value = str(new_days)
-            await session.commit()
-        await self.schedule_cmc_update()
+        await self._update_setting_and_reschedule(
+            "cmc_update_interval_days", new_days, 1, 30, self.schedule_cmc_update
+        )
 
-    async def update_interval(self, new_hours: int):
-        """
-        Метод для вызова из UI при смене настроек (закачка свечей).
-        """
-        if not (1 <= new_hours <= 24):
-            logger.warning(f"Некорректный интервал: {new_hours}")
-            return
-
-        async with get_session() as session:
-            settings = await session.get(AppSettings, "update_interval_hours")
-            if not settings:
-                settings = AppSettings(key="update_interval_hours", value=str(new_hours))
-                session.add(settings)
-            else:
-                settings.value = str(new_hours)
-            await session.commit()
-            
-        await self.schedule_market_update()
+    async def update_market_interval(self, new_hours: int):
+        """Метод для UI (обновление свечей)"""
+        await self._update_setting_and_reschedule(
+            "update_interval_hours", new_hours, 1, 24, self.schedule_market_update
+        )
 
     async def update_scraper_interval(self, new_hours: int):
-        """
-        Метод для вызова из UI при смене настроек (Scraper).
-        """
-        if not (1 <= new_hours <= 24):
-            logger.warning(f"Некорректный интервал скрапера: {new_hours}")
-            return
-
-        async with get_session() as session:
-            settings = await session.get(AppSettings, "scraper_interval_hours")
-            if not settings:
-                settings = AppSettings(key="scraper_interval_hours", value=str(new_hours))
-                session.add(settings)
-            else:
-                settings.value = str(new_hours)
-            await session.commit()
-            
-        await self.schedule_scraper_check()
+        """Метод для UI (скрапер)"""
+        await self._update_setting_and_reschedule(
+            "scraper_interval_hours", new_hours, 1, 24, self.schedule_scraper_check
+        )

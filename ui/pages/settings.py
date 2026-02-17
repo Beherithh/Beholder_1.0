@@ -464,7 +464,7 @@ class SettingsPage:
                 ui.label('Обновление OHLCv').classes('text-md font-medium mt-2')
                 async def on_market_change(e):
                     val = int(e.value)
-                    await scheduler.update_interval(val)
+                    await scheduler.update_market_interval(val)
                     ui.notify(f'Interval OHLCv: {val} ч.', type='positive')
 
                 current_market_interval = 1

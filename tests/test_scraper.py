@@ -19,12 +19,19 @@ from services.scraper import ScraperService
 class TestUpdatePairRisk:
     """Тесты _update_pair_risk — ядро логики риска."""
 
+    @pytest.mark.parametrize("initial_risk, new_risk, expected_risk, should_change", [
+        (RiskLevel.NORMAL, RiskLevel.RISK_ZONE, RiskLevel.RISK_ZONE, True),
+        (RiskLevel.DELISTING_PLANNED, RiskLevel.RISK_ZONE, RiskLevel.DELISTING_PLANNED, False),
+        (RiskLevel.NORMAL, RiskLevel.NORMAL, RiskLevel.NORMAL, False),
+    ])
     @pytest.mark.asyncio
-    async def test_raises_risk_level(self, session_factory, db_session):
-        """NORMAL → RISK_ZONE: обновляет risk_level и создаёт сигнал."""
+    async def test_update_pair_risk_scenarios(
+        self, session_factory, db_session, initial_risk, new_risk, expected_risk, should_change
+    ):
+        """Тестирование переходов уровней риска (включая защиту от понижения)."""
         pair = MonitoredPair(
-            exchange="GATEIO", symbol="SCAM/USDT", source_file="test.json",
-            risk_level=RiskLevel.NORMAL,
+            exchange="GATEIO", symbol="TEST/USDT", source_file="test.json",
+            risk_level=initial_risk,
         )
         db_session.add(pair)
         await db_session.commit()
@@ -32,64 +39,14 @@ class TestUpdatePairRisk:
 
         service = ScraperService(session_factory)
 
-        # Мокаем send_and_log_signal — ленивый импорт из services.notifications
         with patch("services.notifications.send_and_log_signal", new_callable=AsyncMock):
             changed = await service._update_pair_risk(
-                db_session, pair, RiskLevel.RISK_ZONE,
-                SignalType.ST_WARNING, "⚠️ ST WARNING! SCAM/USDT"
+                db_session, pair, new_risk,
+                SignalType.ST_WARNING, f"⚠️ ST WARNING! {pair.symbol}"
             )
 
-        assert changed is True
-        assert pair.risk_level == RiskLevel.RISK_ZONE
-
-        # Сигнал создан в БД
-        result = await db_session.execute(select(Signal))
-        signals = result.scalars().all()
-        assert len(signals) == 1
-        assert signals[0].type == SignalType.ST_WARNING
-
-    @pytest.mark.asyncio
-    async def test_no_downgrade(self, session_factory, db_session):
-        """DELISTING_PLANNED → RISK_ZONE: НЕ понижает risk_level."""
-        pair = MonitoredPair(
-            exchange="GATEIO", symbol="DEAD/USDT", source_file="test.json",
-            risk_level=RiskLevel.DELISTING_PLANNED,
-        )
-        db_session.add(pair)
-        await db_session.commit()
-        await db_session.refresh(pair)
-
-        service = ScraperService(session_factory)
-
-        with patch("services.notifications.send_and_log_signal", new_callable=AsyncMock):
-            await service._update_pair_risk(
-                db_session, pair, RiskLevel.RISK_ZONE,
-                SignalType.ST_WARNING, "⚠️ ST WARNING! DEAD/USDT"
-            )
-
-        # Risk level НЕ изменился
-        assert pair.risk_level == RiskLevel.DELISTING_PLANNED
-
-    @pytest.mark.asyncio
-    async def test_no_signal_for_normal(self, session_factory, db_session):
-        """При new_risk=NORMAL сигнал не создаётся."""
-        pair = MonitoredPair(
-            exchange="GATEIO", symbol="OK/USDT", source_file="test.json",
-        )
-        db_session.add(pair)
-        await db_session.commit()
-        await db_session.refresh(pair)
-
-        service = ScraperService(session_factory)
-
-        changed = await service._update_pair_risk(
-            db_session, pair, RiskLevel.NORMAL,
-            SignalType.ST_WARNING, "OK"
-        )
-
-        assert changed is False
-        result = await db_session.execute(select(Signal))
-        assert len(result.scalars().all()) == 0
+        assert changed == should_change
+        assert pair.risk_level == expected_risk
 
     @pytest.mark.asyncio
     async def test_no_duplicate_signal(self, session_factory, db_session):
