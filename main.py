@@ -1,35 +1,29 @@
 from nicegui import ui, app
+from loguru import logger
+
 from database.core import init_db
+from services.system import init_services, get_scheduler, get_file_watcher_service
 from ui.pages.dashboard import dashboard_page # Register Dashboard as Home
 from ui.pages.signals import signals_page # Register Signals page
 from ui.pages.settings import settings_page # Register page
 from ui.pages.manual_controls import manual_controls_page # Register Manual Controls page
-from ui.pages.logs import logs_page # Register Logs page
-from ui.layout import create_header
-from services.system import init_services, get_scheduler
+from ui.pages.logs import logs_page, init_logging # Register Logs page
 
 async def startup():
     print("Инициализация Базы Данных...")
     await init_db()
     
-    # Авто-миграции отключены на этапе разработки
-    # from database.migrations import migrate_db
-    # await migrate_db()
-
     print("Запуск сервисов...")
     await init_services()
 
     print("Синхронизация отслеживаемых пар...")
-    from services.system import get_file_watcher_service
     watcher = get_file_watcher_service()
     await watcher.sync_from_settings()
     
     # Инициализация перехвата логов для UI
-    from ui.pages.logs import init_logging
     init_logging()
 
     # Добавляем оповещения (Toasts) для Warning/Error
-    from loguru import logger
     def ui_notification_sink(message):
         record = message.record
         if record["level"].name in ("WARNING", "ERROR", "CRITICAL"):
@@ -52,5 +46,4 @@ async def startup():
 app.on_startup(startup)
 
 if __name__ in {"__main__", "__mp_main__"}:
-    # exclude="venv" удален, так как вызывает ошибку в текущей версии NiceGUI
-    ui.run(title='Beholder Dashboard', port=8080, reload=True, show=False)  # show=False чтобы не открывал вкладку автоматически при рестарте
+    ui.run(title='Beholder Dashboard', port=8080, reload=True, show=False)

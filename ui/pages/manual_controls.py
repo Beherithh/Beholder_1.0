@@ -24,6 +24,8 @@ class ManualControlsPage:
         self.is_syncing = True
         button.props('loading')
         ui.notify('Запуск синхронизации...', type='info')
+        matches = 0
+        stats = ""
         try:
             watcher = FileWatcherService(get_session)
             stats = await watcher.sync_from_settings()

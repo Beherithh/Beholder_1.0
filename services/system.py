@@ -14,12 +14,13 @@ telegram_service: TelegramService = None
 file_watcher_service: "FileWatcherService" = None
 config_service: ConfigService = None
 alert_engine: AlertEngine = None
+cmc_service: "CMCService" = None
 
 async def init_services():
     """
     Инициализирует сервисы. Должна вызываться один раз при старте приложения.
     """
-    global market_service, scraper_service, scheduler_service, telegram_service, file_watcher_service, config_service, alert_engine
+    global market_service, scraper_service, scheduler_service, telegram_service, file_watcher_service, config_service, alert_engine, cmc_service
     
     # 0. Config Service (Фундамент)
     config_service = ConfigService(get_session)
@@ -58,8 +59,9 @@ def get_scheduler() -> SchedulerService:
     return scheduler_service
 
 def get_cmc_service():
-    from services.cmc import CMCService
-    return CMCService(get_session)
+    if not cmc_service:
+        raise RuntimeError("Services not initialized! Call init_services() first.")
+    return cmc_service
 
 def get_market_service() -> MarketDataService:
     if not market_service:
