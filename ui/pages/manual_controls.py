@@ -149,15 +149,15 @@ class ManualControlsPage:
                 with ui.row().classes('w-full items-center justify-between p-4 bg-gray-50 rounded border'):
                     with ui.column().classes('gap-1'):
                         ui.label('1. Синхронизация отслеживаемых пар').classes('font-bold')
-                        ui.label('Загружает список пар из файла и проверяет совпадение с уже известными событиями Delisting/ST').classes('text-xs text-gray-500')
-                    btn_sync = ui.button('Запустить', on_click=lambda: self.run_sync(btn_sync)).props('color=grey dense size=md icon=sync')
+                        ui.label('Синхронизирует пары из файлов и проверяет совпадение с уже известными Delisting/ST').classes('text-xs text-gray-500')
+                    btn_sync = ui.button('Синхронизировать', on_click=lambda: self.run_sync(btn_sync)).props('color=grey dense size=md icon=sync')
 
                 # 2. OHLCV
                 with ui.row().classes('w-full items-center justify-between p-4 bg-gray-50 rounded border'):
                     with ui.column().classes('gap-1'):
                         ui.label('2. Обновить OHLCv').classes('font-bold')
-                        ui.label('Скачивает OHLCv для всех активных пар, после запускается проверка на Pump/Dump и объемы').classes('text-xs text-gray-500')
-                    btn_ohlcv = ui.button('Запустить', on_click=lambda: self.run_ohlcv_update(scheduler, btn_ohlcv)).props('color=grey dense size=md icon=sync')
+                        ui.label('Скачивает OHLCv для всех активных пар и запускает проверку на Pump/Dump и объемы').classes('text-xs text-gray-500')
+                    btn_ohlcv = ui.button('Скачать OHLCv', on_click=lambda: self.run_ohlcv_update(scheduler, btn_ohlcv)).props('color=green dense size=md icon=download')
 
                 # 3. Scraper
                 with ui.row().classes('w-full items-center justify-between p-4 bg-gray-50 rounded border'):
@@ -165,7 +165,7 @@ class ManualControlsPage:
                         ui.label('3. Проверка новостей (Delisting/ST)').classes('font-bold')
                         ui.label('Запускает скраперы Gate.io/MEXC/Binance и API проверки').classes('text-xs text-gray-500')
                     
-                    btn_check = ui.button('Проверить риски', on_click=lambda: self.run_scraper_check(scheduler, btn_check)).props('color=orange icon=bug_report')
+                    btn_check = ui.button('Проверить риски', on_click=lambda: self.run_scraper_check(scheduler, btn_check)).props('color=orange dense size=md icon=bug_report')
 
                 # 4. CMC Ranks
                 with ui.row().classes('w-full items-center justify-between p-4 bg-gray-50 rounded border'):
@@ -173,7 +173,7 @@ class ManualControlsPage:
                         ui.label('4. Обновление рангов CMC').classes('font-bold')
                         ui.label('Загружает ранги монет с CoinMarketCap для активных пар').classes('text-xs text-gray-500')
                     
-                    btn_ranks = ui.button('Обновить ранги', on_click=lambda: self.run_cmc_update(scheduler, btn_ranks)).props('color=purple icon=leaderboard')
+                    btn_ranks = ui.button('Обновить ранги', on_click=lambda: self.run_cmc_update(scheduler, btn_ranks)).props('color=purple dense size=md icon=leaderboard')
             
             # --- Danger Zone ---
             ui.separator().classes('my-4')
