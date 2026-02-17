@@ -3,7 +3,6 @@ from sqlmodel import select, desc, delete
 from database.core import get_session
 from database.models import Signal, SignalType
 from ui.layout import create_header
-from loguru import logger
 
 class SignalsPage:
     def __init__(self):

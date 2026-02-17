@@ -1,14 +1,11 @@
-import asyncio
 from nicegui import ui
-from loguru import logger
 from sqlmodel import select, delete
 
 from database.core import get_session
-from database.models import AppSettings, MonitoredPair, MarketData, DelistingEvent, Signal
+from database.models import MonitoredPair, MarketData, DelistingEvent, Signal
 from services.file_watcher import FileWatcherService
 from services.system import get_scraper_service, get_scheduler
 from ui.layout import create_header
-import json
 
 
 class ManualControlsPage:

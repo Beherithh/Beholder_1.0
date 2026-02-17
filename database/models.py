@@ -1,8 +1,8 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from enum import Enum
 from sqlmodel import SQLModel, Field, Relationship
-from sqlalchemy import Column, Integer, ForeignKey
+from sqlalchemy import Column, Integer, ForeignKey, UniqueConstraint, Index
 
 # Enums
 class MonitoringStatus(str, Enum):
@@ -37,7 +37,6 @@ class DelistingEventType(str, Enum):
 class AppSettings(SQLModel, table=True):
     """
     Таблица для хранения настроек приложения (Key-Value).
-    Пример: "watched_files" -> "['C:/data/file1.txt']"
     """
     key: str = Field(primary_key=True)
     value: str
@@ -46,6 +45,11 @@ class MonitoredPair(SQLModel, table=True):
     """
     Основная таблица отслеживаемых пар.
     """
+    # Гарантируем уникальность пары на бирже
+    __table_args__ = (
+        UniqueConstraint("exchange", "symbol", name="unique_exchange_symbol"),
+    )
+
     id: Optional[int] = Field(default=None, primary_key=True)
     exchange: str = Field(index=True) # Например: "GATEIO"
     symbol: str = Field(index=True)   # Например: "BTC/USDT"
@@ -71,25 +75,30 @@ class MonitoredPair(SQLModel, table=True):
 class DelistingEvent(SQLModel, table=True):
     """
     Таблица найденных объявлений о делистинге.
-    Служит "базой знаний" о плохих монетах.
     """
+    # Защита от дублей событий
+    __table_args__ = (
+        UniqueConstraint("exchange", "symbol", "announcement_url", "type", name="unique_event"),
+    )
+
     id: Optional[int] = Field(default=None, primary_key=True)
     exchange: str = Field(index=True)     # "GATEIO"
-    symbol: str = Field(index=True)       # "1SOS" (только базовый символ, без валюты)
+    symbol: str = Field(index=True)       # "1SOS"
     
     announcement_title: str
     announcement_url: str
     type: DelistingEventType = Field(index=True)
-    found_at: datetime = Field(default_factory=datetime.utcnow)
-    
-    # Флаг, что мы уже обработали этот ивент и создали сигнал (чтобы не спамить)
-    # Хотя логика может быть динамической (сравнивать с active_pairs), 
-    # но можно оставить для истории.
+    found_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
 class MarketData(SQLModel, table=True):
     """
     Исторические данные (свечи).
     """
+    # Составной индекс для ускорения выборок по времени для конкретной пары
+    __table_args__ = (
+        Index("idx_pair_timestamp", "pair_id", "timestamp"),
+    )
+
     id: Optional[int] = Field(default=None, primary_key=True)
     pair_id: int = Field(sa_column=Column(Integer, ForeignKey("monitoredpair.id", ondelete="CASCADE"), index=True))
     
@@ -107,11 +116,11 @@ class Signal(SQLModel, table=True):
     Сгенерированные сигналы (алерты).
     """
     id: Optional[int] = Field(default=None, primary_key=True)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), index=True)
     
     type: SignalType
     pair_id: Optional[int] = Field(default=None, index=True)
-    raw_message: str # Текст сообщения для Telegram
+    raw_message: str 
     
-    is_sent: bool = Field(default=False) # Отправлено ли в Telegram
-    sent_at: Optional[datetime] = Field(default=None) # Время отправки
+    is_sent: bool = Field(default=False) 
+    sent_at: Optional[datetime] = Field(default=None)

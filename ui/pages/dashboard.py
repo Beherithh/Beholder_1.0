@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any
 
 from sqlmodel import select
@@ -33,7 +33,7 @@ async def get_dashboard_data() -> Dict[str, Any]:
         # Пока оставим в цикле, но оптимизируем запросы алертов
         
         # Поиск недавних алертов для всех пар сразу (за последние 10 дней)
-        alerts_cutoff = datetime.utcnow() - timedelta(days=10)
+        alerts_cutoff = datetime.now(timezone.utc) - timedelta(days=10)
         
         # Получаем все сигналы за период
         signals_stmt = select(Signal).where(Signal.created_at >= alerts_cutoff)

@@ -1,6 +1,6 @@
 import asyncio
 import ccxt.async_support as ccxt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict
 from loguru import logger
 from sqlmodel import select, desc
@@ -30,7 +30,7 @@ class MarketDataService:
             return last_candle.timestamp
         else:
             # Если истории нет, начинаем с 30 дней назад
-            return datetime.utcnow() - timedelta(days=30)
+            return datetime.now(timezone.utc) - timedelta(days=30)
 
     async def update_pair_history(self, session: AsyncSession, exchange, pair: MonitoredPair) -> int:
         """

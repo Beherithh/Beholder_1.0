@@ -1,6 +1,6 @@
 from typing import List, Dict, Any, Optional
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 import httpx
 from loguru import logger
@@ -129,7 +129,7 @@ class CMCService:
         Проверяет и отправляет алерт о низком ранге.
         """
         # Поиск недавнего сигнала (за последние 3 дня хотя бы)
-        cutoff = datetime.utcnow() - timedelta(days=3)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=3)
         stmt = select(Signal).where(
             Signal.type == SignalType.RANK_WARNING,
             Signal.pair_id == pair.id,
@@ -161,7 +161,7 @@ class CMCService:
             pair_id=pair.id,
             raw_message=msg_text,
             is_sent=False,
-            created_at=datetime.utcnow()
+            created_at=datetime.now(timezone.utc)
         )
         session.add(signal)
         await session.flush() # чтобы получить ID
@@ -174,6 +174,6 @@ class CMCService:
                 sent = await tg.send_message(msg_text)
                 if sent:
                     signal.is_sent = True
-                    signal.sent_at = datetime.utcnow()
+                    signal.sent_at = datetime.now(timezone.utc)
             except Exception as e:
                 logger.error(f"Failed to send CMC alert: {e}")

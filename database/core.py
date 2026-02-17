@@ -44,23 +44,26 @@ async def _ensure_default_settings():
     from database.models import AppSettings
     from sqlalchemy import select
     
-    defaults = {
-        "cmc_rank_threshold": "500",
-        "alert_dedup_hours": "12",
-        "update_interval_hours": "1",
-        "scraper_interval_hours": "1",
-        "cmc_update_interval_days": "5",
-        "watched_files": "[]"
-    }
+    # Список ключей, которые должны быть в БД для корректной работы UI.
+    # Сами значения по умолчанию теперь управляются через ConfigService (services/config.py).
+    keys = [
+        "cmc_rank_threshold",
+        "alert_dedup_hours",
+        "update_interval_hours",
+        "scraper_interval_hours",
+        "cmc_update_interval_days",
+        "watched_files"
+    ]
     
     async with get_session() as session:
-        for key, value in defaults.items():
+        for key in keys:
             stmt = select(AppSettings).where(AppSettings.key == key)
             existing = (await session.execute(stmt)).scalars().first()
             if not existing:
+                # По умолчанию ставим None (строкой), чтобы ConfigService использовал свой дефолт.
+                # Исключение — watched_files, который должен быть валидным JSON-списком.
+                value = "[]" if key == "watched_files" else "None"
                 session.add(AppSettings(key=key, value=value))
-            elif existing.value in (None, "None", ""):
-                existing.value = value
         
         await session.commit()
 

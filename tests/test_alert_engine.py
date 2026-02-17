@@ -7,7 +7,7 @@
 """
 import pytest
 from unittest.mock import patch, AsyncMock
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sqlmodel import select
 
 from database.models import (
@@ -45,7 +45,7 @@ class TestCreateSignalIfNew:
             type=SignalType.PRICE_CHANGE,
             raw_message="📈 PUMP BTC/USDT +50%",
             is_sent=True,
-            created_at=datetime.utcnow() - timedelta(hours=1),
+            created_at=datetime.now(timezone.utc) - timedelta(hours=1),
         )
         db_session.add(existing)
         await db_session.commit()
@@ -70,7 +70,7 @@ class TestCheckPriceAlerts:
         """Рост +100% за период → генерирует PUMP-алерт."""
         await setup_defaults()
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         pair = await create_pair(symbol="MOON/USDT", exchange="GATEIO")
         
         candles = [
@@ -104,7 +104,7 @@ class TestCheckPriceAlerts:
         """Изменение < порога → алерт НЕ генерируется."""
         await setup_defaults()
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         pair = await create_pair(symbol="FLAT/USDT", exchange="GATEIO")
         
         candles = [

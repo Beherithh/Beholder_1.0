@@ -1,7 +1,7 @@
 import asyncio
 from sqlmodel import select
 from database.core import get_session
-from database.models import MonitoredPair, MonitoringStatus
+from database.models import MonitoredPair
 
 async def main():
     async with get_session() as session:

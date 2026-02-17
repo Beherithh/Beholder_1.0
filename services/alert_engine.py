@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from loguru import logger
 from sqlmodel import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,7 +25,7 @@ class AlertEngine:
 
     async def _check_price_alerts(self, session: AsyncSession, pair: MonitoredPair, config: AlertConfig):
         """Проверка алертов изменения цены (Pump/Dump)"""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         checks = [
             ("hours", "pump", config.h_pump_period, config.h_pump_threshold),
@@ -91,7 +91,7 @@ class AlertEngine:
         if not (v_period and v_threshold and v_threshold > 0):
             return
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         since_v = now - timedelta(days=v_period)
         
         stmt_v = select(func.sum(MarketData.volume * MarketData.close)).where(
@@ -119,7 +119,7 @@ class AlertEngine:
 
     async def _create_signal_if_new(self, session: AsyncSession, sig_type: SignalType, msg: str, dedup_hours: int):
         """Создает сигнал в БД и отправляет в ТГ, если такого сообщения еще не было за последние N часов"""
-        cutoff_time = datetime.utcnow() - timedelta(hours=dedup_hours)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=dedup_hours)
         stmt = select(Signal).where(
             Signal.type == sig_type,
             Signal.raw_message == msg,
