@@ -1,0 +1,23 @@
+# Lock files should keep LF line endings
+*.lock text eol=lf
+uv.lock text eol=lf
+
+# Python files use LF
+*.py text eol=lf
+
+# Configuration files
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+
+# Documentation
+*.md text eol=lf
+*.txt text eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
