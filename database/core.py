@@ -3,6 +3,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import event
 
+# Импортируем все модели, чтобы SQLAlchemy знал о таблицах
+from database.models import MonitoredPair, AppSettings, Signal, DelistingEvent
+
 # Имя файла базы данных SQLite
 sqlite_file_name = "database.db"
 # Строка подключения. 

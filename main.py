@@ -10,13 +10,13 @@ from ui.pages.manual_controls import manual_controls_page # Register Manual Cont
 from ui.pages.logs import logs_page, init_logging # Register Logs page
 
 async def startup():
-    print("Инициализация Базы Данных...")
+    print("Initializing Database...")
     await init_db()
     
-    print("Запуск сервисов...")
+    print("Starting services...")
     await init_services()
 
-    print("Синхронизация отслеживаемых пар...")
+    print("Syncing monitored pairs...")
     watcher = get_file_watcher_service()
     await watcher.sync_from_settings()
     
