@@ -22,7 +22,7 @@ class ManualControlsPage:
         button.props('loading')
         ui.notify('Запуск синхронизации...', type='info')
         matches = 0
-        stats = ""
+        stats = {}
         try:
             watcher = FileWatcherService(get_session)
             stats = await watcher.sync_from_settings()
@@ -33,9 +33,17 @@ class ManualControlsPage:
                 matches = await scraper.match_monitored_pairs_with_events(session)
                 
             try:
-                ui.notify(f'Синхронизация завершена! {stats}. Найдено совпадений: {matches}', type='positive')
+                # Проверяем наличие ошибок (отсутствующие файлы)
+                missing = stats.get("missing_files", [])
+                if missing:
+                    ui.notify(f'Внимание! Не найдены файлы: {", ".join(missing)}', type='negative', timeout=10000)
+                
+                # Формируем строку статистики для уведомления
+                stats_str = f"Added: {stats.get('added', 0)}, Reactivated: {stats.get('reactivated', 0)}, Archived: {stats.get('archived', 0)}"
+                ui.notify(f'Синхронизация завершена! {stats_str}. Найдено совпадений: {matches}', type='positive')
+                
                 if self.stats_label:
-                    self.stats_label.text = f"{stats} | Matches: {matches}"
+                    self.stats_label.text = f"{stats_str} | Matches: {matches}"
             except:
                 pass
         finally:

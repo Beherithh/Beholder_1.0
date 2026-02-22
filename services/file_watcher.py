@@ -2,7 +2,7 @@ import asyncio
 import json
 import re
 from pathlib import Path
-from typing import List, Set, Tuple, Dict
+from typing import List, Set, Tuple, Dict, Any
 from loguru import logger
 from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,14 +27,15 @@ class FileWatcherService:
         # Сюда можно добавлять другие биржи по мере необходимости
     }
 
-    async def _read_files(self, file_items: List[Dict[str, str]]) -> Set[Tuple[str, str, str, str]]:
+    async def _read_files(self, file_items: List[Dict[str, str]]) -> Tuple[Set[Tuple[str, str, str, str]], List[str]]:
         """
         Приватный метод. Читает все файлы JSON и собирает уникальные пары.
         
         :param file_items: Список словарей [{'path': '...', 'name': '...'}, ...]
-        :return: Множество кортежей: {(exchange, symbol, source_file_path, source_label), ...}
+        :return: (Множество пар, Список отсутствующих файлов)
         """
         found_pairs = set()
+        missing_files = []
 
         for item in file_items:
             path_str = item.get("path")
@@ -45,6 +46,7 @@ class FileWatcherService:
             path = Path(path_str)
             if not path.exists():
                 logger.warning(f"Файл не найден: {path_str}")
+                missing_files.append(path_str)
                 continue
 
             # 1. Парсинг имени файла
@@ -88,7 +90,7 @@ class FileWatcherService:
                         # 1. Если есть разделитель "_" или "-" или "." -> меняем на "/"
                         if any(sep in normalized_symbol for sep in ("_", "-", ".")):
                             normalized_symbol = re.sub(r'[_\-\.]', '/', normalized_symbol)
-                        
+
                         # 2. Если разделителя нет (AXSUSDT), ищем известную котируемую валюту (Quote)
                         elif "/" not in normalized_symbol:
                             # Сначала пробуем ту, что была в имени файла (приоритет)
@@ -114,17 +116,18 @@ class FileWatcherService:
                 logger.error(f"Ошибка чтения {path_str}: {e}")
 
         logger.info(f"Всего найдено пар в файлах: {len(found_pairs)}")
-        return found_pairs
+        return found_pairs, missing_files
 
-    async def sync_files(self, file_dict_list: List[Dict[str, str]]) -> Dict[str, int]:
+    async def sync_files(self, file_dict_list: List[Dict[str, str]]) -> Dict[str, Any]:
         """
         Основной метод синхронизации.
         :param file_dict_list: [{'path': 'C:/...', 'name': 'Gate 1'}, ...]
         """
-        stats = {"added": 0, "reactivated": 0, "archived": 0, "unchanged": 0}
+        stats = {"added": 0, "reactivated": 0, "archived": 0, "unchanged": 0, "missing_files": []}
         
-        # 1. Читаем файлы (передаем список словарей)
-        file_pairs_set = await self._read_files(file_dict_list)
+        # 1. Читаем файлы
+        file_pairs_set, missing_files = await self._read_files(file_dict_list)
+        stats["missing_files"] = missing_files
         
         # Агрегация: (exchange, symbol) -> {labels: set(), files: set()}
         aggregated_map = {}
@@ -149,35 +152,24 @@ class FileWatcherService:
                 # Формируем JSON строку меток (сортируем для стабильности)
                 labels_list = sorted(list(data["labels"]))
                 labels_json = json.dumps(labels_list, ensure_ascii=False)
-                
-                # Исходный файл берем последний (или первый), так как поле source_file строковое.
-                primary_file = list(data["files"])[0] 
+                primary_file = list(data["files"])[0]
 
                 if (exchange, symbol) in db_pairs_map:
-                    # Обновление существующей
                     existing_pair = db_pairs_map[(exchange, symbol)]
-                    
-                    # Проверяем изменения
-                    changes_needed = False
-                    
+
                     if existing_pair.monitoring_status == MonitoringStatus.INACTIVE:
                         existing_pair.monitoring_status = MonitoringStatus.ACTIVE
                         stats["reactivated"] += 1
-                        changes_needed = True
                     else:
                         stats["unchanged"] += 1
 
-                    # Обновляем метаданные
                     if existing_pair.source_label != labels_json:
                         existing_pair.source_label = labels_json
-                        changes_needed = True
                     
                     if existing_pair.source_file != primary_file:
                         existing_pair.source_file = primary_file
-                        changes_needed = True 
                         
                 else:
-                    # Создание новой
                     new_pair = MonitoredPair(
                         exchange=exchange,
                         symbol=symbol,
@@ -203,10 +195,10 @@ class FileWatcherService:
         logger.success(f"Синхронизация завершена: {stats}")
         return stats
 
-    async def sync_from_settings(self) -> str:
+    async def sync_from_settings(self) -> Dict[str, Any]:
         """
         Загружает список файлов из ConfigService и выполняет синхронизацию.
-        Возвращает строку со статистикой.
+        Возвращает словарь со статистикой.
         """
         from services.system import get_config_service
         
@@ -214,7 +206,7 @@ class FileWatcherService:
         
         if not files_list:
             logger.warning("Нет файлов для синхронизации в настройках")
-            return "Нет настроенных файлов"
+            return {"error": "Нет настроенных файлов"}
         
         # Синхронизация
         stats = await self.sync_files(files_list)

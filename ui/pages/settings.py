@@ -170,7 +170,13 @@ class SettingsPage:
                 scraper = get_scraper_service()
                 matches = await scraper.match_monitored_pairs_with_events(session)
             
-            ui.notify(f'Авто-синхронизация: {stats}. Найдено совпадений: {matches}', type='positive')
+            # Проверяем наличие ошибок (отсутствующие файлы)
+            missing = stats.get("missing_files", [])
+            if missing:
+                ui.notify(f'Внимание! Не найдены файлы: {", ".join(missing)}', type='negative', timeout=10000)
+            
+            stats_str = f"Added: {stats.get('added', 0)}, Reactivated: {stats.get('reactivated', 0)}, Archived: {stats.get('archived', 0)}"
+            ui.notify(f'Авто-синхронизация: {stats_str}. Найдено совпадений: {matches}', type='positive')
         except Exception as e:
             logger.error(f"Ошибка авто-синхронизации: {e}")
             ui.notify('Ошибка при автоматической синхронизации', type='negative')
@@ -187,7 +193,14 @@ class SettingsPage:
             try:
                 watcher = FileWatcherService(get_session)
                 stats = await watcher.sync_from_settings()
-                ui.notify(f'Список обновлен: {stats}', type='positive')
+                
+                # Проверяем наличие ошибок (отсутствующие файлы)
+                missing = stats.get("missing_files", [])
+                if missing:
+                    ui.notify(f'Внимание! Не найдены файлы: {", ".join(missing)}', type='negative', timeout=10000)
+                
+                stats_str = f"Added: {stats.get('added', 0)}, Reactivated: {stats.get('reactivated', 0)}, Archived: {stats.get('archived', 0)}"
+                ui.notify(f'Список обновлен: {stats_str}', type='positive')
             except Exception as e:
                 logger.error(f"Ошибка авто-синхронизации после удаления: {e}")
 
@@ -226,7 +239,8 @@ class SettingsPage:
                     # Правая часть: Кнопка удаления
                     ui.button(icon='delete', color='red', on_click=lambda i=item: self.remove_file(i)).props('flat dense')
 
-    async def pick_file(self, target_input):
+    @staticmethod
+    async def pick_file(target_input):
         def _open_dialog():
             root = tk.Tk()
             root.withdraw() 
