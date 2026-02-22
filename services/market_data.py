@@ -57,7 +57,7 @@ class MarketDataService:
                 
                 for candle in candles:
                     ts_ms, o, h, l, c, v = candle
-                    candle_time = datetime.fromtimestamp(ts_ms / 1000)
+                    candle_time = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
                     
                     # Защита от дублей: если свеча совпадает с last_time, пропускаем
                     if candle_time <= last_time:
@@ -80,7 +80,7 @@ class MarketDataService:
                 
                 # Обновляем last_time для следующей итерации
                 last_candle_in_batch_ts = candles[-1][0]
-                last_time = datetime.fromtimestamp(last_candle_in_batch_ts / 1000)
+                last_time = datetime.fromtimestamp(last_candle_in_batch_ts / 1000, tz=timezone.utc)
                 
                 logger.info(f"[{pair.exchange}] ...загружено {new_count_in_batch} свечей, последняя: {last_time}")
 

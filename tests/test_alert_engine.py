@@ -79,7 +79,7 @@ class TestCheckPriceAlerts:
         ]
         for ts, o, h, l, c, v in candles:
             candle = MarketData(
-                pair_id=pair.id, timestamp=ts,
+                pair_id=pair.id, timestamp=ts.replace(tzinfo=timezone.utc),
                 open=o, high=h, low=l, close=c, volume=v,
             )
             db_session.add(candle)

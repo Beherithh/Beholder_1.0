@@ -54,6 +54,14 @@ class AlertEngine:
             min_candle = min(candles, key=lambda x: x.low)
             max_candle = max(candles, key=lambda x: x.high)
             
+            # Нормализуем timestamp для корректного сравнения
+            min_time = min_candle.timestamp
+            max_time = max_candle.timestamp
+            if min_time.tzinfo is None:
+                min_time = min_time.replace(tzinfo=timezone.utc)
+            if max_time.tzinfo is None:
+                max_time = max_time.replace(tzinfo=timezone.utc)
+            
             p_min = min_candle.low
             p_max = max_candle.high
             
@@ -63,7 +71,7 @@ class AlertEngine:
             alert_msg = ""
             
             if direction_type == "dump":
-                if max_candle.timestamp < min_candle.timestamp:
+                if max_time < min_time:
                      change = (p_min / p_max - 1) * 100
                      if abs(change) >= threshold:
                         alert_msg = f"📉 DUMP <b>{pair.symbol}</b> \n" \
@@ -72,7 +80,7 @@ class AlertEngine:
                                     f"Min: {p_min} | Max: {p_max}"
             
             elif direction_type == "pump":
-                 if min_candle.timestamp < max_candle.timestamp:
+                 if min_time < max_time:
                      change = (p_max / p_min - 1) * 100
                      if change >= threshold:
                         alert_msg = f"📈 PUMP <b>{pair.symbol}</b> \n" \

@@ -38,7 +38,7 @@ class TestReadFiles:
         fp = create_json_file(tmp_path, "Gate_instruments_USDT.json", ["BTCUSDT"])
         service = FileWatcherService(session_factory=None)  # _read_files не использует БД
 
-        result = await service._read_files([{"path": str(fp), "name": "Gate 1"}])
+        result, missing_files = await service._read_files([{"path": str(fp), "name": "Gate 1"}])
 
         assert len(result) == 1
         exchange, symbol, path, label = next(iter(result))
@@ -52,7 +52,7 @@ class TestReadFiles:
         fp = create_json_file(tmp_path, "Gate_instruments_USDT.json", ["BTC_USDT"])
         service = FileWatcherService(session_factory=None)
 
-        result = await service._read_files([{"path": str(fp), "name": "Test"}])
+        result, missing_files = await service._read_files([{"path": str(fp), "name": "Test"}])
         _, symbol, _, _ = next(iter(result))
         assert symbol == "BTC/USDT"
 
@@ -65,7 +65,7 @@ class TestReadFiles:
         )
         service = FileWatcherService(session_factory=None)
 
-        result = await service._read_files([{"path": str(fp), "name": "Test"}])
+        result, missing_files = await service._read_files([{"path": str(fp), "name": "Test"}])
         symbols = {sym for _, sym, _, _ in result}
         assert symbols == {"BTC/USDT", "ETH/USDT", "SOL/USDT"}
 
@@ -74,8 +74,9 @@ class TestReadFiles:
         """Несуществующий файл пропускается без ошибки."""
         service = FileWatcherService(session_factory=None)
 
-        result = await service._read_files([{"path": "C:/nonexistent.json", "name": "X"}])
+        result, missing_files = await service._read_files([{"path": "C:/nonexistent.json", "name": "X"}])
         assert len(result) == 0
+        assert len(missing_files) == 1
 
     @pytest.mark.asyncio
     async def test_empty_listhelper(self, tmp_path):
@@ -84,7 +85,7 @@ class TestReadFiles:
         fp.write_text('{"other_key": []}', encoding="utf-8")
         service = FileWatcherService(session_factory=None)
 
-        result = await service._read_files([{"path": str(fp), "name": "Test"}])
+        result, missing_files = await service._read_files([{"path": str(fp), "name": "Test"}])
         assert len(result) == 0
 
     @pytest.mark.asyncio
@@ -93,7 +94,7 @@ class TestReadFiles:
         fp = create_json_file(tmp_path, "2_Gate_instruments_USDT.json", ["ADAUSDT"])
         service = FileWatcherService(session_factory=None)
 
-        result = await service._read_files([{"path": str(fp), "name": "Test"}])
+        result, missing_files = await service._read_files([{"path": str(fp), "name": "Test"}])
         exchange, symbol, _, _ = next(iter(result))
         assert exchange == "GATEIO"
         assert symbol == "ADA/USDT"

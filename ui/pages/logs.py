@@ -1,6 +1,7 @@
 from nicegui import ui
 from loguru import logger
 from ui.layout import create_header
+import os
 
 # Глобальный список для хранения последних логов
 LOG_BUFFER = []
@@ -71,7 +72,23 @@ def init_logging():
     """Инициализация перехвата логов (вызывается один раз при старте)"""
     global is_registered
     if not is_registered:
-        logger.add(broadcast_log, format="{message}")
+        # 1. Лог в UI (через broadcast_log)
+        logger.add(broadcast_log, format="{message}", level="INFO")
+        
+        # 2. Лог в файл (Ротация: 10 MB или каждый день в 00:00, храним 10 дней)
+        log_dir = "logs"
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+            
+        logger.add(
+            os.path.join(log_dir, "beholder.log"),
+            rotation="10 MB",
+            retention="10 days",
+            compression="zip",
+            level="INFO",
+            format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {module}:{function}:{line} - {message}"
+        )
+        
         is_registered = True
 
 @ui.page('/logs')
@@ -92,10 +109,7 @@ def logs_page():
         # Создаем обертку
         reverse_logger = ReverseLog(log_container, max_lines=1000)
         
-        # Заполняем историей (в обратном порядке, так как push добавляет в начало)
-        # LOG_BUFFER: [Oldest, ..., Newest]
-        # push(Oldest) -> [Oldest]
-        # push(Newest) -> [Newest, ..., Oldest]
+        # Заполняем историей
         for line in LOG_BUFFER:
             reverse_logger.push(line)
             
