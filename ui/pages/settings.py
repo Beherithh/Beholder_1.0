@@ -4,6 +4,7 @@ import asyncio
 import json
 from nicegui import ui
 from loguru import logger
+import os
 
 from database.core import get_session
 from database.models import AppSettings
@@ -43,6 +44,9 @@ class SettingsPage:
         self.market_interval = 1
         self.scraper_interval = 1
         self.cmc_interval = 5
+        
+        # UI контейнеры (инициализируются в render)
+        self.files_container = None
         
     async def load_settings(self):
         """Загружаем все настройки через ConfigService"""
@@ -222,6 +226,9 @@ class SettingsPage:
             self.refresh_ui()
     
     def refresh_ui(self):
+        if self.files_container is None:
+            return
+            
         self.files_container.clear()
         with self.files_container:
             if not self.files_list:
@@ -241,20 +248,67 @@ class SettingsPage:
 
     @staticmethod
     async def pick_file(target_input):
-        def _open_dialog():
-            root = tk.Tk()
-            root.withdraw() 
-            root.wm_attributes('-topmost', 1) 
-            file_path = filedialog.askopenfilename(
-                title="Выберите файл с парами (JSON)",
-                filetypes=[("All files", "*.*"), ("Text/JSON files", "*.txt *.json")]
-            )
-            root.destroy()
-            return file_path
-        
-        path = await asyncio.get_running_loop().run_in_executor(None, _open_dialog)
-        if path:
-            target_input.value = path
+        """Отрисовывает интерфейс выбора файла из файловой системы сервера."""
+        # Начинаем с текущей рабочей директории сервера (или укажите абсолютный путь, например 'C:\\')
+        start_path = os.path.abspath('.')
+
+        with ui.dialog() as dialog, ui.card().classes('w-[500px] h-[600px] flex flex-col'):
+            ui.label('Выберите файл на сервере').classes('text-lg font-bold mb-2')
+
+            # Поле для отображения текущего пути на сервере
+            current_path_label = ui.label(start_path).classes('text-xs text-gray-500 font-mono mb-2 break-all')
+
+            # Контейнер для списка папок и файлов
+            file_list_container = ui.column().classes('overflow-y-auto flex-grow w-full border rounded p-2')
+
+            def update_list(path):
+                current_path_label.set_text(path)
+                file_list_container.clear()
+
+                with file_list_container:
+                    # Кнопка возврата на уровень выше (если не в корне)
+                    parent = os.path.dirname(path)
+                    if parent != path:
+                        ui.button('📁 [Вверх]', on_click=lambda p=parent: update_list(p)).props(
+                            'flat dense align=left w-full').classes('text-blue-600')
+
+                    try:
+                        items = os.listdir(path)
+                    except PermissionError:
+                        ui.label('Отказано в доступе к директории').classes('text-red-500 mt-2')
+                        return
+                    except FileNotFoundError:
+                        ui.label('Директория не найдена').classes('text-red-500 mt-2')
+                        return
+
+                    # Разделяем на папки и файлы для удобной сортировки
+                    dirs = sorted([d for d in items if os.path.isdir(os.path.join(path, d))])
+                    files = sorted([f for f in items if os.path.isfile(os.path.join(path, f))])
+
+                    # Отрисовка папок
+                    for d in dirs:
+                        full_dir = os.path.join(path, d)
+                        ui.button(f'📁 {d}', on_click=lambda p=full_dir: update_list(p)).props(
+                            'flat dense align=left w-full').classes('text-blue-500 lowercase')
+
+                    # Отрисовка всех файлов (фильтрация убрана)
+                    for f in files:
+                        full_file = os.path.join(path, f)
+                        ui.button(f'📄 {f}', on_click=lambda p=full_file: dialog.submit(p)).props(
+                                 'flat dense align=left w-full').classes('text-gray-700')
+
+            # Инициализируем список для стартовой директории
+            update_list(start_path)
+
+            # Кнопка отмены
+            with ui.row().classes('w-full justify-end mt-4'):
+                ui.button('Отмена', on_click=lambda: dialog.submit(None)).classes('bg-gray-400 text-white')
+
+        # Ожидаем выбор пользователя
+        result = await dialog
+        if result:
+            target_input.value = result
+
 
     async def test_telegram(self):
         """Проверка связи с ТГ"""
