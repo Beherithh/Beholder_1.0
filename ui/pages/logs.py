@@ -75,7 +75,12 @@ def init_logging():
         # 1. Лог в UI (через broadcast_log)
         logger.add(broadcast_log, format="{message}", level="INFO")
         
-        # 2. Лог в файл (Ротация: 10 MB или каждый день в 00:00, храним 10 дней)
+        # 2. Лог в UI для ошибок (через broadcast_error_log)
+        from ui.pages.errors import broadcast_error_log
+        logger.add(broadcast_error_log, format="{message}", level="ERROR")
+        logger.add(broadcast_error_log, format="{message}", level="WARNING")
+        
+        # 3. Лог в файл (Ротация: 10 MB или каждый день в 00:00, храним 10 дней)
         log_dir = "logs"
         if not os.path.exists(log_dir):
             os.makedirs(log_dir)

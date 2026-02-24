@@ -102,7 +102,7 @@ class MarketData(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     pair_id: int = Field(sa_column=Column(Integer, ForeignKey("monitoredpair.id", ondelete="CASCADE"), index=True))
     
-    timestamp: datetime = Field(index=True)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), index=True)
     open: float
     high: float
     low: float

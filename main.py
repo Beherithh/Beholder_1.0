@@ -8,6 +8,7 @@ from ui.pages.signals import signals_page # Register Signals page
 from ui.pages.settings import settings_page # Register page
 from ui.pages.manual_controls import manual_controls_page # Register Manual Controls page
 from ui.pages.logs import logs_page, init_logging # Register Logs page
+from ui.pages.errors import errors_page # Register Errors page
 
 async def startup():
     print("Initializing Database...")

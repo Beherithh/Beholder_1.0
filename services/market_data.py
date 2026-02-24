@@ -27,7 +27,12 @@ class MarketDataService:
         last_candle = result.scalars().first()
         
         if last_candle:
-            return last_candle.timestamp
+            # Убеждаемся, что timestamp имеет timezone (UTC)
+            timestamp = last_candle.timestamp
+            if timestamp.tzinfo is None:
+                # Если timestamp offset-naive, делаем его offset-aware (UTC)
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+            return timestamp
         else:
             # Если истории нет, начинаем с 30 дней назад
             return datetime.now(timezone.utc) - timedelta(days=30)
