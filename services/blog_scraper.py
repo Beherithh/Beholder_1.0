@@ -22,6 +22,68 @@ class BlogScraperService:
         self.web_scraper = web_scraper
         self.article_parser = article_parser
 
+    def _extract_article_links(self, html: str, source: dict) -> dict[str, str]:
+        """
+        Извлекает и фильтрует ссылки на статьи из HTML.
+        Для KuCoin дополнительно ищет ссылки в JSON внутри тегов <script>.
+        """
+        soup = BeautifulSoup(html, 'html.parser')
+        unique_links = {}
+        ex_name = source["name"]
+        
+        # Ищем все ссылки, подходящие под паттерн статьи
+        raw_links = soup.find_all('a', href=source["link_pattern"])
+        
+        for link in raw_links:
+            href = link.get('href')
+            if not href:
+                continue
+                
+            # Нормализация URL
+            if href.startswith('/'):
+                full_url = f"{source['domain']}{href}"
+            elif href.startswith('http'):
+                full_url = href
+            else:
+                continue
+                
+            # Очищаем URL от параметров запроса и якорей для точного сравнения
+            normalized_url = full_url.rstrip('/')
+            base_normalized_url = normalized_url.split('?')[0].split('#')[0]
+            base_source_url = source["url"].split('?')[0].split('#')[0]
+            
+            # Пропускаем саму главную страницу списка, её родительские пути и пагинацию
+            if base_source_url.startswith(base_normalized_url) or "/list/" in full_url:
+                continue
+                
+            title = link.get_text(strip=True)
+            if full_url not in unique_links and title:
+                unique_links[full_url] = title
+                
+        # Дополнительный поиск для KuCoin: данные часто скрыты в <script> (JSON state)
+        if ex_name == "KUCOIN":
+            scripts = soup.find_all('script')
+            for script in scripts:
+                content = script.string
+                if not content or '"records":[' not in content:
+                    continue
+                
+                matches = re.finditer(r'\{"id":\d+,"title":"([^"]+)".*?"path":"([^"]+)"', content)
+                for match in matches:
+                    item_title = match.group(1)
+                    item_path = match.group(2)
+                    
+                    if not item_path.startswith('http'):
+                        item_url = f"{source['domain']}/announcement{item_path}"
+                    else:
+                        item_url = item_path
+                        
+                    if item_url not in unique_links:
+                        unique_links[item_url] = item_title
+                        logger.debug(f"[KUCOIN-JS] Found article: {item_title}")
+                        
+        return unique_links
+
     async def check_delistings_blog(self) -> int:
         """
         1. Парсит список статей для каждой настроенной биржи.
@@ -71,57 +133,7 @@ class BlogScraperService:
                     
                     try:
                         html = await self.web_scraper.fetch_html(source["url"])
-                        soup = BeautifulSoup(html, 'html.parser')
-                        
-                        # Ищем все ссылки, подходящие под паттерн статьи
-                        raw_links = soup.find_all('a', href=source["link_pattern"])
-                        
-                        # Уникализация ссылок
-                        unique_links = {}
-                        for link in raw_links:
-                            href = link['href']
-                            # Нормализация URL
-                            if href.startswith('/'):
-                                full_url = f"{source['domain']}{href}"
-                            elif href.startswith('http'):
-                                full_url = href
-                            else:
-                                continue
-                                
-                            # Очищаем URL от параметров запроса и якорей для точного сравнения
-                            normalized_url = full_url.rstrip('/')
-                            base_normalized_url = normalized_url.split('?')[0].split('#')[0]
-                            base_source_url = source["url"].split('?')[0].split('#')[0]
-                            
-                            # Пропускаем саму главную страницу списка, её родительские пути и пагинацию
-                            if base_source_url.startswith(base_normalized_url) or "/list/" in full_url:
-                                continue
-                                
-                            title = link.get_text(strip=True)
-                            if full_url not in unique_links and title:
-                                unique_links[full_url] = title
-                        
-                        # Дополнительный поиск для KuCoin: данные часто скрыты в <script> (JSON state)
-                        if ex_name == "KUCOIN":
-                            scripts = soup.find_all('script')
-                            for script in scripts:
-                                content = script.string
-                                if not content or '"records":[' not in content:
-                                    continue
-                                
-                                matches = re.finditer(r'\{"id":\d+,"title":"([^"]+)".*?"path":"([^"]+)"', content)
-                                for match in matches:
-                                    item_title = match.group(1)
-                                    item_path = match.group(2)
-                                    
-                                    if not item_path.startswith('http'):
-                                        item_url = f"{source['domain']}/announcement{item_path}"
-                                    else:
-                                        item_url = item_path
-                                        
-                                    if item_url not in unique_links:
-                                        unique_links[item_url] = item_title
-                                        logger.debug(f"[KUCOIN-JS] Found article: {item_title}")
+                        unique_links = self._extract_article_links(html, source)
                         
                         logger.info(f"[{ex_name}] Found {len(unique_links)} candidate articles.")
                         
