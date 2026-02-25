@@ -88,8 +88,13 @@ class BlogScraperService:
                             else:
                                 continue
                                 
-                            # Пропускаем саму главную страницу списка и пагинацию
-                            if full_url.rstrip('/') == source["url"].rstrip('/') or "/list/" in full_url:
+                            # Очищаем URL от параметров запроса и якорей для точного сравнения
+                            normalized_url = full_url.rstrip('/')
+                            base_normalized_url = normalized_url.split('?')[0].split('#')[0]
+                            base_source_url = source["url"].split('?')[0].split('#')[0]
+                            
+                            # Пропускаем саму главную страницу списка, её родительские пути и пагинацию
+                            if base_source_url.startswith(base_normalized_url) or "/list/" in full_url:
                                 continue
                                 
                             title = link.get_text(strip=True)
