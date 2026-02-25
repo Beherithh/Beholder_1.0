@@ -4,10 +4,10 @@ import re
 from pathlib import Path
 from typing import List, Set, Tuple, Dict, Any
 from loguru import logger
-from sqlmodel import select
+from sqlmodel import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import MonitoredPair, MonitoringStatus, RiskLevel
+from database.models import MonitoredPair, MonitoringStatus, RiskLevel, Signal
 
 class FileWatcherService:
     """
@@ -159,6 +159,7 @@ class FileWatcherService:
 
                     if existing_pair.monitoring_status == MonitoringStatus.INACTIVE:
                         existing_pair.monitoring_status = MonitoringStatus.ACTIVE
+                        existing_pair.risk_level = RiskLevel.NORMAL
                         stats["reactivated"] += 1
                     else:
                         stats["unchanged"] += 1
@@ -187,6 +188,8 @@ class FileWatcherService:
                     if db_pair.monitoring_status == MonitoringStatus.ACTIVE:
                         # Была активна, но исчезла из файлов -> УДАЛЯЕМ (Мягко)
                         db_pair.monitoring_status = MonitoringStatus.INACTIVE
+                        db_pair.risk_level = RiskLevel.NORMAL
+                        await session.execute(delete(Signal).where(Signal.pair_id == db_pair.id))
                         stats["archived"] += 1
             
             # Сохраняем изменения

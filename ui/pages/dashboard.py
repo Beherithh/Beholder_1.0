@@ -40,16 +40,18 @@ async def get_dashboard_data() -> Dict[str, Any]:
         recent_signals = (await session.execute(signals_stmt)).scalars().all()
         
         # Группируем сигналы по pair_id (если есть) или по тексту
-        price_alerts_map = set()
-        volume_alerts_map = set()
+        price_alerts_map = {}
+        volume_alerts_map = {}
+        muted_risk_alerts_map = set()
         
         for sig in recent_signals:
-            # Простая эвристика по тексту, так как pair_id может быть не заполнен в старых записях
-            # Но лучше использовать pair_id если есть
             if sig.type == SignalType.PRICE_CHANGE:
-                if sig.pair_id: price_alerts_map.add(sig.pair_id)
+                if sig.pair_id: price_alerts_map[sig.pair_id] = sig.raw_message
             elif sig.type == SignalType.VOLUME_ALERT:
-                if sig.pair_id: volume_alerts_map.add(sig.pair_id)
+                if sig.pair_id: volume_alerts_map[sig.pair_id] = sig.raw_message
+            elif sig.type in [SignalType.ST_WARNING, SignalType.DELISTING_WARNING]:
+                if sig.pair_id and getattr(sig, "is_silent", False):
+                    muted_risk_alerts_map.add(sig.pair_id)
 
         for pair in pairs:
             # Статистика
@@ -94,8 +96,9 @@ async def get_dashboard_data() -> Dict[str, Any]:
                 risk_color = "text-yellow-600 font-medium"
 
             # Алерты (используем map)
-            has_price_alert = pair.id in price_alerts_map
-            has_volume_alert = pair.id in volume_alerts_map
+            price_alert_msg = price_alerts_map.get(pair.id)
+            volume_alert_msg = volume_alerts_map.get(pair.id)
+            is_risk_muted = pair.id in muted_risk_alerts_map
 
             # Rank Logic
             rank_val = pair.cmc_rank
@@ -123,8 +126,9 @@ async def get_dashboard_data() -> Dict[str, Any]:
                 "labels_count": len(labels) if isinstance(labels, list) else 1,
                 "updated": updated_at,
                 "tv_url": f"https://www.tradingview.com/chart/?symbol={pair.exchange.upper()}:{pair.symbol.replace('/', '')}",
-                "has_price_alert": has_price_alert,
-                "has_volume_alert": has_volume_alert
+                "price_alert_msg": price_alert_msg,
+                "volume_alert_msg": volume_alert_msg,
+                "is_risk_muted": is_risk_muted
             })
         
         return {"rows": data_rows, "stats": stats}
@@ -243,8 +247,8 @@ async def dashboard_page():
                 {'name': 'rank', 'label': '#', 'field': 'rank', 'align': 'center', 'sortable': True},
                 {'name': 'price', 'label': 'Цена', 'field': 'price', 'align': 'right', 'sortable': True},
                 {'name': 'risk_level', 'label': 'Статус', 'field': 'risk_level', 'align': 'center', 'sortable': True},
-                {'name': 'has_price_alert', 'label': '📈', 'field': 'has_price_alert', 'align': 'center', 'sortable': True},
-                {'name': 'has_volume_alert', 'label': '📊', 'field': 'has_volume_alert', 'align': 'center', 'sortable': True},
+                {'name': 'price_alert_msg', 'label': '📈', 'field': 'price_alert_msg', 'align': 'center', 'sortable': True},
+                {'name': 'volume_alert_msg', 'label': '📊', 'field': 'volume_alert_msg', 'align': 'center', 'sortable': True},
                 {'name': 'labels_count', 'label': 'Списков', 'field': 'labels_count', 'align': 'center', 'sortable': True},
                 {'name': 'labels', 'label': 'Метки файлов', 'field': 'labels', 'align': 'left', 'sortable': True},
                 {'name': 'tv_url', 'label': 'ТВ', 'field': 'tv_url', 'align': 'center'},
@@ -260,6 +264,9 @@ async def dashboard_page():
                     <template v-if="props.row.announcement_url">
                         <a :href="props.row.announcement_url" target="_blank" class="no-underline">
                             <q-badge :class="props.row.risk_color" outline class="cursor-pointer hover:bg-gray-100">
+                                <q-icon v-if="props.row.is_risk_muted" name="volume_off" size="xs" color="grey" class="q-mr-xs">
+                                    <q-tooltip>Алерт заглушен (пользователем)</q-tooltip>
+                                </q-icon>
                                 {{ props.value }}
                                 <q-icon name="open_in_new" size="xs" class="q-ml-xs" />
                             </q-badge>
@@ -267,6 +274,9 @@ async def dashboard_page():
                     </template>
                     <template v-else>
                         <q-badge :class="props.row.risk_color" outline>
+                            <q-icon v-if="props.row.is_risk_muted" name="volume_off" size="xs" color="grey" class="q-mr-xs">
+                                <q-tooltip>Алерт заглушен (пользователем)</q-tooltip>
+                            </q-icon>
                             {{ props.value }}
                         </q-badge>
                     </template>
@@ -289,19 +299,19 @@ async def dashboard_page():
                 </q-td>
             ''')
 
-            table_ref.add_slot('body-cell-has_price_alert', '''
+            table_ref.add_slot('body-cell-price_alert_msg', '''
                 <q-td :props="props">
-                    <q-icon v-if="props.value" name="warning" color="orange">
-                        <q-tooltip>Алерт по цене (10 дн)</q-tooltip>
+                    <q-icon v-if="props.value" name="warning" color="orange" size="sm">
+                        <q-tooltip class="bg-black text-body2 break-words max-w-xs">{{ props.value }}</q-tooltip>
                     </q-icon>
                     <span v-else class="text-gray-300">—</span>
                 </q-td>
             ''')
 
-            table_ref.add_slot('body-cell-has_volume_alert', '''
+            table_ref.add_slot('body-cell-volume_alert_msg', '''
                 <q-td :props="props">
-                    <q-icon v-if="props.value" name="warning" color="purple">
-                        <q-tooltip>Алерт по объему (10 дн)</q-tooltip>
+                    <q-icon v-if="props.value" name="warning" color="purple" size="sm">
+                        <q-tooltip class="bg-black text-body2 break-words max-w-xs">{{ props.value }}</q-tooltip>
                     </q-icon>
                     <span v-else class="text-gray-300">—</span>
                 </q-td>

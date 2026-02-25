@@ -9,6 +9,7 @@ class TestScraperService:
     def mock_session_factory(self):
         """Фикстура для создания мока сессии БД"""
         mock_session = AsyncMock()
+        mock_session.add = MagicMock()  # session.add is synchronous
         mock_factory = MagicMock(return_value=mock_session)
         # Нужно, чтобы контекстный менеджер (async with factory()) возвращал сессию
         mock_factory.__aenter__.return_value = mock_session

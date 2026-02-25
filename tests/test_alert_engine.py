@@ -28,7 +28,7 @@ class TestCreateSignalIfNew:
 
         with patch("services.notifications.send_and_log_signal", new_callable=AsyncMock):
             await service._create_signal_if_new(
-                db_session, SignalType.PRICE_CHANGE, "📈 PUMP BTC/USDT +50%", dedup_hours=12
+                db_session, SignalType.PRICE_CHANGE, "📈 PUMP BTC/USDT +50%"
             )
 
         result = await db_session.execute(select(Signal))
@@ -37,15 +37,14 @@ class TestCreateSignalIfNew:
         assert signals[0].raw_message == "📈 PUMP BTC/USDT +50%"
 
     @pytest.mark.asyncio
-    async def test_skips_duplicate_within_window(self, session_factory, db_session, setup_defaults):
-        """Не создаёт дубликат, если такой же сигнал отправлен < N часов назад."""
+    async def test_skips_duplicate_if_exists_active(self, session_factory, db_session, setup_defaults):
+        """Не создаёт дубликат, если активный сигнал уже есть в БД."""
         await setup_defaults()
 
         existing = Signal(
             type=SignalType.PRICE_CHANGE,
             raw_message="📈 PUMP BTC/USDT +50%",
-            is_sent=True,
-            created_at=datetime.now(timezone.utc) - timedelta(hours=1),
+            is_sent=True
         )
         db_session.add(existing)
         await db_session.commit()
@@ -54,7 +53,7 @@ class TestCreateSignalIfNew:
 
         with patch("services.notifications.send_and_log_signal", new_callable=AsyncMock):
             await service._create_signal_if_new(
-                db_session, SignalType.PRICE_CHANGE, "📈 PUMP BTC/USDT +50%", dedup_hours=12
+                db_session, SignalType.PRICE_CHANGE, "📈 PUMP BTC/USDT +50%"
             )
 
         result = await db_session.execute(select(Signal))
@@ -129,3 +128,49 @@ class TestCheckPriceAlerts:
         result = await db_session.execute(select(Signal))
         signals = result.scalars().all()
         assert len(signals) == 0
+
+    @pytest.mark.asyncio
+    async def test_stateful_cleanup_deletes_old_alerts(self, session_factory, db_session, setup_defaults, create_pair, config_service):
+        """Если памп больше не актуален, старые алерты удаляются (Stateful)."""
+        await setup_defaults()
+
+        now = datetime.now(timezone.utc)
+        pair = await create_pair(symbol="NORMAL/USDT", exchange="GATEIO")
+        
+        # Создаем старый алерт
+        old_pump = Signal(
+            type=SignalType.PRICE_CHANGE,
+            pair_id=pair.id,
+            raw_message="📈 PUMP NORMAL/USDT +150%"
+        )
+        db_session.add(old_pump)
+        
+        old_dump = Signal(
+            type=SignalType.PRICE_CHANGE,
+            pair_id=pair.id,
+            raw_message="📉 DUMP NORMAL/USDT -60%"
+        )
+        db_session.add(old_dump)
+        
+        # Свечи, не нарушающие порог
+        candles = [
+            (now - timedelta(hours=3), 1.0, 1.05, 0.95, 1.0, 100),
+            (now - timedelta(hours=1), 1.0, 1.03, 0.97, 1.01, 100),
+        ]
+        for ts, o, h, l, c, v in candles:
+            candle = MarketData(
+                pair_id=pair.id, timestamp=ts,
+                open=o, high=h, low=l, close=c, volume=v,
+            )
+            db_session.add(candle)
+        await db_session.commit()
+
+        config = await config_service.get_alert_config()
+        service = AlertEngine(session_factory)
+
+        with patch("services.notifications.send_and_log_signal", new_callable=AsyncMock):
+            await service._check_price_alerts(db_session, pair, config)
+
+        result = await db_session.execute(select(Signal))
+        signals = result.scalars().all()
+        assert len(signals) == 0  # Все старые алерты были удалены

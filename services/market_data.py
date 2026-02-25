@@ -198,9 +198,9 @@ class MarketDataService:
             
         logger.info(f"Сбор курсов для валют: {quotes}")
         
-        # Для простоты используем gateio как основной источник курсов
+        # Для простоты используем binance как основной источник курсов (он работает стабильнее для основных пар типа BTC/USDT)
         try:
-            async with ccxt.gateio() as ex:
+            async with ccxt.binance() as ex:
                 for q in quotes:
                     try:
                         # Пытаемся получить курс к USDT
@@ -210,7 +210,7 @@ class MarketDataService:
                         logger.info(f"Актуальный курс {q}/USDT: {rates[q]}")
                     except Exception as e:
                         logger.warning(f"Не удалось получить курс {q}/USDT: {e}")
-                        rates[q] = 1.0 # Пропускаем конвертацию если не вышло
+                        rates[q] = None # Указываем, что курс не был получен
         except Exception as e:
             logger.error(f"Критическая ошибка при получении курсов валют: {e}")
             

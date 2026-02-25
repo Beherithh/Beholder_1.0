@@ -55,9 +55,12 @@ class TestUpdatePairRisk:
             exchange="GATEIO", symbol="DUP/USDT", source_file="test.json",
         )
         db_session.add(pair)
+        await db_session.commit()
+        await db_session.refresh(pair)
 
         existing_signal = Signal(
             type=SignalType.DELISTING_WARNING,
+            pair_id=pair.id,
             raw_message="⚠️ DELIST DUP/USDT",
             is_sent=True,
         )

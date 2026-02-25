@@ -12,7 +12,6 @@ from database.models import AppSettings
 # Ожидаемые дефолтные настройки — фиксируем текущее поведение
 EXPECTED_DEFAULTS = {
     "cmc_rank_threshold": "500",
-    "alert_dedup_hours": "12",
     "update_interval_hours": "1",
     "scraper_interval_hours": "1",
     "cmc_update_interval_days": "5",
@@ -78,13 +77,13 @@ class TestEnsureDefaultSettings:
     @pytest.mark.asyncio
     async def test_restores_none_string(self, db_session):
         """Строка 'None' тоже считается пустым значением."""
-        db_session.add(AppSettings(key="alert_dedup_hours", value="None"))
+        db_session.add(AppSettings(key="cmc_update_interval_days", value="None"))
         await db_session.commit()
 
         await self._run_defaults_logic(db_session)
 
-        result = await db_session.get(AppSettings, "alert_dedup_hours")
-        assert result.value == "12"
+        result = await db_session.get(AppSettings, "cmc_update_interval_days")
+        assert result.value == "5"
 
 
 class TestTablesCreation:

@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import httpx
 from loguru import logger
-from sqlmodel import select
+from sqlmodel import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import MonitoredPair, MonitoringStatus, Signal, SignalType
@@ -110,6 +110,12 @@ class CMCService:
                                             # Проверка алерта с использованием порога из конфига
                                             if rank > config.rank_threshold:
                                                 await self._process_alert(session, pair, rank)
+                                            else:
+                                                # Возвращение в норму - удаление старых алертов RANK_WARNING
+                                                await session.execute(delete(Signal).where(
+                                                    Signal.pair_id == pair.id,
+                                                    Signal.type == SignalType.RANK_WARNING
+                                                ))
                         else:
                             logger.error(f"Ошибка CMC API {response.status_code}: {response.text}")
                             
@@ -128,12 +134,10 @@ class CMCService:
         """
         Проверяет и отправляет алерт о низком ранге.
         """
-        # Поиск недавнего сигнала (за последние 3 дня хотя бы)
-        cutoff = datetime.now(timezone.utc) - timedelta(days=3)
+        # Поиск активного сигнала
         stmt = select(Signal).where(
             Signal.type == SignalType.RANK_WARNING,
-            Signal.pair_id == pair.id,
-            Signal.created_at >= cutoff
+            Signal.pair_id == pair.id
         )
         existing = (await session.execute(stmt)).first()
         if existing:
@@ -173,7 +177,8 @@ class CMCService:
             try:
                 sent = await tg.send_message(msg_text)
                 if sent:
+                    # Отмечаем сигнал как отправленный
                     signal.is_sent = True
-                    signal.sent_at = datetime.now(timezone.utc)
+                    session.add(signal)
             except Exception as e:
                 logger.error(f"Failed to send CMC alert: {e}")

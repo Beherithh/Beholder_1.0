@@ -91,7 +91,6 @@ def setup_defaults(db_session: AsyncSession):
     """Фикстура для инициализации дефолтных настроек."""
     async def _setup():
         defaults = {
-            "alert_dedup_hours": "12",
             "cmc_rank_threshold": "500",
             "alert_price_hours_pump_period": "6",
             "alert_price_hours_pump_threshold": "50",

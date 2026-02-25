@@ -1,10 +1,10 @@
 import httpx
 from loguru import logger
-from sqlmodel import select
+from sqlmodel import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import (
-    MonitoredPair, DelistingEvent, DelistingEventType, RiskLevel
+    MonitoredPair, DelistingEvent, DelistingEventType, RiskLevel, Signal, SignalType
 )
 
 class ApiRiskCheckerService:
@@ -192,6 +192,13 @@ class ApiRiskCheckerService:
                     if not any_st_active:
                         pair.risk_level = RiskLevel.NORMAL
                         session.add(pair)
+                        
+                        # Stateful очистка - удаляем ST_WARNING и DELISTING_WARNING т.к. пара теперь в норме
+                        await session.execute(delete(Signal).where(
+                            Signal.pair_id == pair.id,
+                            Signal.type.in_([SignalType.ST_WARNING, SignalType.DELISTING_WARNING])
+                        ))
+                        
                         signals_created += 1
                         changes_detected = True
                         logger.info(f"[{current_ex}] {pair.symbol} - ST Cleared for ticker {base_currency} (Recovery).")

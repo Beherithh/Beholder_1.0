@@ -35,7 +35,7 @@ class ScraperService:
         self.blog_scraper = BlogScraperService(session_factory, self.web_scraper, self.article_parser)
     
     async def _update_pair_risk(self, session, pair: MonitoredPair, new_risk: RiskLevel, 
-                                 signal_type: SignalType, msg: str) -> bool:
+                                 signal_type: SignalType, msg: str, evidence: DelistingEvent = None) -> bool:
         """
         Универсальный метод обновления риска пары.
         Использует RiskLevel.priority для предотвращения понижения.
@@ -51,17 +51,25 @@ class ScraperService:
             
             # 2. Отправляем уведомление только при ПОВЫШЕНИИ риска
             if new_risk != RiskLevel.NORMAL:
-                # Check for duplicate signal
-                sig_check = select(Signal).where(
+                # Условия для поиска дублей
+                conditions = [
                     Signal.type == signal_type, 
-                    Signal.raw_message == msg,
-                    Signal.is_sent == True
-                )
+                    Signal.pair_id == pair.id
+                ]
+                
+                # Если передан эвиденс (событие), ищем упоминание конкретной биржи
+                if evidence:
+                    conditions.append(Signal.raw_message.like(f"%Info from: {evidence.exchange}.%"))
+                    # Если это реальная статья (не API тег), ищем конкретный URL статьи, чтобы не пропустить новые статьи
+                    if evidence.announcement_url and evidence.announcement_url != "API" and not evidence.announcement_url.startswith("http://API"):
+                        conditions.append(Signal.raw_message.like(f"%Article: {evidence.announcement_url}%"))
+                
+                sig_check = select(Signal).where(*conditions)
                 existing_sig = (await session.execute(sig_check)).first()
                 
                 if not existing_sig:
                     logger.warning(f"Creating NEW signal (risk increased): {msg}")
-                    new_sig = Signal(type=signal_type, raw_message=msg)
+                    new_sig = Signal(type=signal_type, pair_id=pair.id, raw_message=msg)
                     session.add(new_sig)
                     await session.commit()
                     await session.refresh(new_sig)
@@ -147,7 +155,7 @@ class ScraperService:
                          trigger_text = f"\n {evidence.announcement_title}"
 
                     msg = f"{msg_prefix} Pair: {pair.symbol} Active in: {pair.source_label} \n Info from: {evidence.exchange}. Article: {evidence.announcement_url}{trigger_text}"
-                    if await self._update_pair_risk(session, pair, new_risk, signal_type, msg):
+                    if await self._update_pair_risk(session, pair, new_risk, signal_type, msg, evidence):
                         pairs_updated += 1
 
         if pairs_updated > 0:

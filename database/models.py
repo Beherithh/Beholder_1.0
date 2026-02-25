@@ -123,4 +123,5 @@ class Signal(SQLModel, table=True):
     raw_message: str 
     
     is_sent: bool = Field(default=False) 
-    sent_at: Optional[datetime] = Field(default=None)
+    
+    is_silent: bool = Field(default=False)

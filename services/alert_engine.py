@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 from loguru import logger
-from sqlmodel import select, func
+from sqlmodel import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import MonitoredPair, MarketData, Signal, SignalType
@@ -33,6 +33,9 @@ class AlertEngine:
             ("days", "pump", config.d_pump_period, config.d_pump_threshold),
             ("days", "dump", config.d_dump_period, config.d_dump_threshold),
         ]
+
+        has_pump = False
+        has_dump = False
 
         for period_type, direction_type, period_val, threshold in checks:
             if period_val is None or threshold is None or threshold <= 0:
@@ -74,6 +77,7 @@ class AlertEngine:
                 if max_time < min_time:
                      change = (p_min / p_max - 1) * 100
                      if abs(change) >= threshold:
+                        has_dump = True
                         alert_msg = f"📉 DUMP <b>{pair.symbol}</b> \n" \
                                     f"({pair.exchange}): {pair.source_label}\n" \
                                     f"<b>{change:+.0f}%</b> in {period_val} {period_type}\n" \
@@ -83,13 +87,32 @@ class AlertEngine:
                  if min_time < max_time:
                      change = (p_max / p_min - 1) * 100
                      if change >= threshold:
+                        has_pump = True
                         alert_msg = f"📈 PUMP <b>{pair.symbol}</b> \n" \
                                     f"({pair.exchange}): {pair.source_label}\n" \
                                     f"<b>{change:+.0f}%</b> in {period_val} {period_type}\n" \
                                     f"Min: {p_min} | Max: {p_max}"
 
             if alert_msg:
-                await self._create_signal_if_new(session, SignalType.PRICE_CHANGE, alert_msg, config.dedup_hours)
+                await self._create_signal_if_new(session, SignalType.PRICE_CHANGE, alert_msg, pair.id)
+                
+        # "Stateful" очистка: Если ни одного дампа не обнаружено, удаляем все старые алерты DUMP по этой паре
+        if not has_dump:
+            await session.execute(delete(Signal).where(
+                Signal.pair_id == pair.id, 
+                Signal.type == SignalType.PRICE_CHANGE,
+                Signal.raw_message.like("%DUMP%")
+            ))
+            await session.commit()
+            
+        # Аналогично для пампа
+        if not has_pump:
+            await session.execute(delete(Signal).where(
+                Signal.pair_id == pair.id, 
+                Signal.type == SignalType.PRICE_CHANGE,
+                Signal.raw_message.like("%PUMP%")
+            ))
+            await session.commit()
 
     async def _check_volume_alerts(self, session: AsyncSession, pair: MonitoredPair, config: AlertConfig, rates: dict):
         """Проверка алертов по объему"""
@@ -110,7 +133,14 @@ class AlertEngine:
         
         # Конвертируем в USDT если нужно
         quote = pair.symbol.split('/')[1] if '/' in pair.symbol else "USDT"
-        rate = rates.get(quote, 1.0)
+        
+        rate = rates.get(quote) if quote != "USDT" else 1.0
+        
+        if rate is None:
+            from loguru import logger
+            logger.warning(f"Пропуск расчета объема для {pair.symbol}: курс {quote}/USDT недоступен.")
+            return
+
         total_v_usdt = total_v_raw * rate
 
         if total_v_usdt <= v_threshold * v_period:
@@ -123,21 +153,36 @@ class AlertEngine:
                 v_msg += f" (quote {quote}: {rate})"
             
             v_msg += f"\nThreshold: {v_threshold:,.0f} USDT"
-            await self._create_signal_if_new(session, SignalType.VOLUME_ALERT, v_msg, config.dedup_hours)
+            await self._create_signal_if_new(session, SignalType.VOLUME_ALERT, v_msg, pair.id)
+        else:
+            # Объем в норме -> удаляем старые алерты по объему
+            await session.execute(delete(Signal).where(
+                Signal.pair_id == pair.id,
+                Signal.type == SignalType.VOLUME_ALERT
+            ))
+            await session.commit()
 
-    async def _create_signal_if_new(self, session: AsyncSession, sig_type: SignalType, msg: str, dedup_hours: int):
-        """Создает сигнал в БД и отправляет в ТГ, если такого сообщения еще не было за последние N часов"""
-        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=dedup_hours)
-        stmt = select(Signal).where(
+    async def _create_signal_if_new(self, session: AsyncSession, sig_type: SignalType, msg: str, pair_id: int | None = None):
+        """Создает сигнал в БД и отправляет в ТГ, если такого сообщения еще нет в активном пуле"""
+        # Базовое условие: тот же тип, та же пара
+        conditions = [
             Signal.type == sig_type,
-            Signal.raw_message == msg,
-            Signal.is_sent == True,
-            Signal.created_at >= cutoff_time
-        )
+            Signal.pair_id == pair_id,
+        ]
+        
+        # Для изменения цены проверяем направление (PUMP или DUMP)
+        if sig_type == SignalType.PRICE_CHANGE:
+            if "PUMP" in msg:
+                conditions.append(Signal.raw_message.like("%PUMP%"))
+            elif "DUMP" in msg:
+                conditions.append(Signal.raw_message.like("%DUMP%"))
+        # Для других типов (например VOLUME_ALERT) достаточно совпадения типа и pair_id
+        
+        stmt = select(Signal).where(*conditions)
         existing = (await session.execute(stmt)).first()
         
         if not existing:
-            new_sig = Signal(type=sig_type, raw_message=msg)
+            new_sig = Signal(type=sig_type, pair_id=pair_id, raw_message=msg)
             session.add(new_sig)
             await session.commit()
             await session.refresh(new_sig)

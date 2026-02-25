@@ -51,7 +51,6 @@ async def _ensure_default_settings():
     # Сами значения по умолчанию теперь управляются через ConfigService (services/config.py).
     keys = [
         "cmc_rank_threshold",
-        "alert_dedup_hours",
         "update_interval_hours",
         "scraper_interval_hours",
         "cmc_update_interval_days",

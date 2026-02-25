@@ -32,8 +32,6 @@ class SettingsPage:
         self.alert_price_days_dump_threshold = None
         self.alert_volume_days_period = None
         self.alert_volume_days_threshold = None
-        self.alert_dedup_hours = 12
-        
         # Настройки CoinMarketCap
         self.cmc_api_key = ""
         self.cmc_rank_threshold = 500
@@ -72,7 +70,6 @@ class SettingsPage:
         self.alert_price_days_dump_threshold = alert_conf.d_dump_threshold
         self.alert_volume_days_period = alert_conf.v_period
         self.alert_volume_days_threshold = alert_conf.v_threshold
-        self.alert_dedup_hours = alert_conf.dedup_hours
         
         # CMC
         cmc_conf = await config.get_cmc_config()
@@ -116,8 +113,6 @@ class SettingsPage:
             await set_val("alert_price_days_dump_threshold", self.alert_price_days_dump_threshold)
             await set_val("alert_volume_days_period", self.alert_volume_days_period)
             await set_val("alert_volume_days_threshold", self.alert_volume_days_threshold)
-            await set_val("alert_dedup_hours", self.alert_dedup_hours)
-            
             # Сохраняем настройки CMC
             await set_val("cmc_api_key", self.cmc_api_key)
             await set_val("cmc_rank_threshold", self.cmc_rank_threshold)
@@ -150,7 +145,7 @@ class SettingsPage:
             ui.label('Введите уникальное имя для списка:')
             name_input = ui.input('Название').classes('w-full').props('autofocus')
             with ui.row():
-                ui.button('OK', on_click=lambda: dialog.submit(name_input.value)).classes('bg-blue-600 text-white')
+                ui.button('OK', on_click=lambda: dialog.submit(name_input.value))
                 ui.button('Cancel', on_click=lambda: dialog.submit(None))
         
         chosen_name = await dialog
@@ -213,7 +208,7 @@ class SettingsPage:
             ui.label(f'Изменить имя для {item["name"]}:')
             name_input = ui.input(value=item["name"]).classes('w-full').props('autofocus')
             with ui.row():
-                ui.button('Save', on_click=lambda: dialog.submit(name_input.value)).classes('bg-blue-600')
+                ui.button('Save', on_click=lambda: dialog.submit(name_input.value))
                 ui.button('Cancel', on_click=lambda: dialog.submit(None))
         
         new_name = await dialog
@@ -338,7 +333,7 @@ class SettingsPage:
                 path_input = ui.input('Путь к файлу').classes('flex-grow').props('outlined dense')
                 # Кнопка выбора файла (native dialog)
                 ui.button(icon='folder', on_click=lambda: self.pick_file(path_input)).props('flat dense').tooltip('Выбрать файл на диске')
-                ui.button('Добавить', on_click=lambda: self.add_file(path_input)).classes('bg-blue-500 text-white')
+                ui.button('Добавить', on_click=lambda: self.add_file(path_input))
             
             # List Area
             ui.separator().classes('my-4')
@@ -349,10 +344,10 @@ class SettingsPage:
             ui.separator().classes('my-4')
             ui.label('Уведомления Telegram').classes('text-xl font-bold mb-2')
             with ui.row().classes('w-full items-center gap-4'):
-                token_input = ui.input('Bot Token', password=True, password_toggle_button=True).classes('flex-grow').bind_value(self, 'tg_token')
-                chat_input = ui.input('Chat ID').classes('w-32').bind_value(self, 'tg_chat_id')
+                ui.input('Bot Token', password=True, password_toggle_button=True).classes('flex-grow').bind_value(self, 'tg_token')
+                ui.input('Chat ID').classes('w-32').bind_value(self, 'tg_chat_id')
                 ui.button('Тест', on_click=self.test_telegram).props('outline').classes('h-10')
-                ui.button('Сохранить', on_click=self.save_settings).classes('bg-green-600 text-white h-10')
+                ui.button('Сохранить', on_click=self.save_settings).classes('h-10')
             ui.label('Создайте бота через @BotFather и получите свой ID через @userinfobot').classes('text-xs text-gray-400')
             
             # --- Telegram API (Pyrogram) ---
@@ -361,7 +356,7 @@ class SettingsPage:
             with ui.row().classes('w-full items-center gap-4'):
                 ui.input('API ID', placeholder='12345678').classes('w-40').bind_value(self, 'tg_api_id')
                 ui.input('API Hash', password=True, password_toggle_button=True, placeholder='0123456789abcdef...').classes('flex-grow').bind_value(self, 'tg_api_hash')
-                ui.button('Сохранить', on_click=self.save_settings).classes('bg-green-600 text-white h-10')
+                ui.button('Сохранить', on_click=self.save_settings).classes('h-10')
             ui.label('Получите credentials на my.telegram.org → API development tools. Используется для парсинга @BinanceAnnouncements').classes('text-xs text-gray-400')
 
 
@@ -372,7 +367,7 @@ class SettingsPage:
             with ui.row().classes('w-full items-center gap-4'):
                 ui.input('API Key', password=True, password_toggle_button=True).classes('flex-grow').bind_value(self, 'cmc_api_key')
                 ui.number('Порог рейтинга хлама', min=1).classes('w-32').bind_value(self, 'cmc_rank_threshold').props('dense')
-                ui.button('Сохранить', on_click=self.save_settings).classes('bg-green-600 text-white h-10')
+                ui.button('Сохранить', on_click=self.save_settings).classes('h-10')
 
             # --- Scheduler Settings ---
             ui.separator().classes('my-4')
@@ -453,8 +448,6 @@ class SettingsPage:
                     ui.number('Период (дн)', min=1, max=30).classes('w-24').bind_value(self, 'alert_price_days_pump_period').props('dense')
                     ui.number('Порог %', min=0.1).classes('w-24').bind_value(self, 'alert_price_days_pump_threshold').props('dense suffix=%')
                 
-                ui.separator().classes('my-2')
-                
                 # Dump Alerts
                 ui.label('📉 DUMP (падение цены)').classes('text-lg font-bold text-red-600')
                 with ui.row().classes('items-center gap-4 ml-4'):
@@ -467,22 +460,14 @@ class SettingsPage:
                     ui.number('Период (дн)', min=1, max=30).classes('w-24').bind_value(self, 'alert_price_days_dump_period').props('dense')
                     ui.number('Порог %', min=0.1).classes('w-24').bind_value(self, 'alert_price_days_dump_threshold').props('dense suffix=%')
             
-                ui.separator().classes('my-4')
-                
                 # Volume Days
+                ui.label('Volume').classes('text-lg font-bold text-blue-600')
                 with ui.row().classes('items-center gap-4'):
                     ui.label('Объем торгов (дни):').classes('w-48')
                     ui.number('Дни', min=1, max=30).classes('w-24').bind_value(self, 'alert_volume_days_period').props('dense')
                     ui.number('Порог USDT в день', min=0).classes('w-40').bind_value(self, 'alert_volume_days_threshold').props('dense suffix=USDT')
                 
-                # Deduplication window
-                ui.separator().classes('my-2')
-                with ui.row().classes('items-center gap-4'):
-                    ui.label('Блокировать одинаковые алерты:').classes('w-48')
-                    ui.number('Часы', min=1, max=168).classes('w-24').bind_value(self, 'alert_dedup_hours').props('dense')
-                    ui.label('(одинаковый алерт по той же паре не чаще чем раз в X часов)').classes('text-xs text-gray-400')
-                
-                ui.button('Сохранить настройки алертов', on_click=self.save_settings).classes('bg-blue-600 text-white w-fit self-end')
+                ui.button('Сохранить настройки алертов', on_click=self.save_settings, color='positive').classes('w-fit self-end')
                 ui.label('Если поля пустые - алерт считается выключенным. Пороги указываются как положительные числа.').classes('text-xs text-gray-400')
 
 

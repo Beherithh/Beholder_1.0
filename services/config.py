@@ -27,9 +27,6 @@ class AlertConfig(BaseModel):
     # Объем
     v_period: int = 30
     v_threshold: Optional[float] = None
-    
-    # Дедупликация (защита от спама)
-    dedup_hours: int = 12
 
 class CMCConfig(BaseModel):
     """DTO для настроек CoinMarketCap"""
@@ -98,7 +95,6 @@ class ConfigService:
                 d_pump_period=await self._get_int(session, "alert_price_days_pump_period", default=24),
                 d_dump_period=await self._get_int(session, "alert_price_days_dump_period", default=24),
                 v_period=await self._get_int(session, "alert_volume_days_period", default=30),
-                dedup_hours=await self._get_int(session, "alert_dedup_hours", default=12),
                 
                 # Опциональные параметры (без дефолтов -> None)
                 h_pump_threshold=await self._get_float(session, "alert_price_hours_pump_threshold"),
