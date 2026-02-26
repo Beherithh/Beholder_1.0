@@ -57,7 +57,12 @@ class FileWatcherService:
             # - Gate_instruments_USDT
             # - 2_Gate_instruments_USDT
             # - Gate_ANYTHING_USDT.json
-            match = re.search(r'(?:^\d+_)?([^_]+)_.+_([^_]+)$', filename)
+            # - Kucoin Spot_instruments_BTC       (тип рынка "Spot" игнорируется)
+            # - 2_Kucoin Spot_instruments_BTC     (числовой префикс + тип рынка)
+            #
+            # Биржа — это первое слово до пробела или `_` (группа [^ _]+).
+            # Всё между биржей и служебным словом (_instruments_ и т.п.) — тип рынка, игнорируется.
+            match = re.match(r'^(?:\d+_)?([^ _]+).*?_[^_ ]+_([^_ ]+?)(?:\.[^.]+)?$', filename)
             
             if match:
                 raw_exchange = match.group(1).upper()
@@ -101,13 +106,21 @@ class FileWatcherService:
                                 q_up = q.upper()
                                 if q_up not in quotes_to_check:
                                     quotes_to_check.append(q_up)
-                            
+
                             for q in quotes_to_check:
                                 if normalized_symbol.endswith(q) and len(normalized_symbol) > len(q):
                                     base = normalized_symbol[:-len(q)]
                                     normalized_symbol = f"{base}/{q}"
                                     break
-                        
+                            else:
+                                # Котировка не найдена внутри символа (например, просто "DOGE").
+                                # Если имя файла дало нам quote_currency — используем его напрямую.
+                                if quote_currency:
+                                    normalized_symbol = f"{normalized_symbol}/{quote_currency}"
+                                    logger.debug(f"Символ '{raw_symbol}' не содержит котировку — применён fallback из файла: {normalized_symbol}")
+                                else:
+                                    logger.warning(f"Символ '{raw_symbol}' пропущен: не удалось определить котировку.")
+
                         found_pairs.add((exchange_name, normalized_symbol, path_str, label))
                     
             except json.JSONDecodeError:
