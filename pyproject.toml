@@ -31,3 +31,7 @@ dev = [
 asyncio_mode = "auto"
 testpaths = ["tests"]
 python_files = "test_*.py"
+markers = [
+    "external: marks tests that require external resources/calls"
+]
+
