@@ -36,6 +36,16 @@ class SignalsPage:
         # Обновляем данные и UI
         await self.refresh_table()
 
+    async def delete_signal(self, signal_id: int):
+        """Удаление сигнала из базы данных"""
+        async with get_session() as session:
+            signal = await session.get(Signal, signal_id)
+            if signal:
+                await session.delete(signal)
+                await session.commit()
+                ui.notify(f'Сигнал #{signal_id} удален', type='positive')
+        await self.refresh_table()
+
     def get_type_style(self, sig_type: SignalType) -> str:
         """Цветовая индикация для типов сигналов"""
         styles = {
@@ -138,6 +148,10 @@ class SignalsPage:
             await self.toggle_mute_signal(signal_id)
             apply_filters()
 
+        async def handle_delete_signal(signal_id):
+            await self.delete_signal(signal_id)
+            apply_filters()
+
         with ui.card().classes('w-full max-w-6xl mx-auto p-4'):
             with ui.row().classes('w-full justify-between items-center mb-4'):
                 ui.label('История сигналов (последние 100)').classes('text-2xl font-bold')
@@ -166,7 +180,7 @@ class SignalsPage:
                 {'name': 'type', 'label': 'Тип', 'field': 'type', 'sortable': True, 'align': 'center'},
                 {'name': 'sent', 'label': 'Отправлен', 'field': 'sent', 'sortable': True, 'align': 'center'},
                 {'name': 'message', 'label': 'Сообщение', 'field': 'message', 'align': 'left', 'classes': 'whitespace-pre-line max-w-md break-words'},
-                {'name': 'actions', 'label': 'Заглушить', 'field': 'id', 'align': 'center'},
+                {'name': 'actions', 'label': 'Действия', 'field': 'id', 'align': 'center'},
             ]
 
             self.table = ui.table(columns=columns, rows=self.full_rows, row_key='id').classes('w-full').props('flat bordered wrap-cells')
@@ -188,18 +202,27 @@ class SignalsPage:
                 </q-td>
             ''')
 
-            # Кастомизация столбца Действия (Заглушить)
+            # Кастомизация столбца Действия (Заглушить и Удалить)
             self.table.add_slot('body-cell-actions', '''
-                <q-td :props="props">
+                <q-td :props="props" class="flex flex-nowrap gap-1 justify-center items-center h-full pt-3">
                     <q-btn flat round dense 
                            :icon="props.row.is_silent ? 'volume_off' : 'volume_up'" 
                            :color="props.row.is_silent ? 'grey' : 'blue'" 
-                           @click="$parent.$emit('toggle_mute', props.row.id)" />
+                           @click="$parent.$emit('toggle_mute', props.row.id)">
+                        <q-tooltip>{{ props.row.is_silent ? 'Включить звук' : 'Заглушить' }}</q-tooltip>
+                    </q-btn>
+                    <q-btn flat round dense 
+                           icon="delete" 
+                           color="red" 
+                           @click="$parent.$emit('delete_signal', props.row.id)">
+                        <q-tooltip>Удалить сигнал</q-tooltip>
+                    </q-btn>
                 </q-td>
             ''')
             
             # Обработка события нажатия из JS
             self.table.on('toggle_mute', lambda msg: handle_toggle_mute(msg.args))
+            self.table.on('delete_signal', lambda msg: handle_delete_signal(msg.args))
 
 @ui.page('/signals')
 async def signals_page():
