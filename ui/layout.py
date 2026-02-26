@@ -10,6 +10,7 @@ MENU_ITEMS = [
     {"icon": "⚙️", "text": "Настройки", "path": "/settings"},
     {"icon": "▶️", "text": "Кнопки", "path": "/manual"},
     {"icon": "📋", "text": "Логи", "path": "/logs"},
+    {"icon": "⚠️", "text": "Предупреждения", "path": "/warnings"},
     {"icon": "🚨", "text": "Ошибки", "path": "/errors"},
 ]
 
