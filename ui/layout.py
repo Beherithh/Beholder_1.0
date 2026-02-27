@@ -7,10 +7,11 @@ LINK_CLASSES = 'text-white no-underline hover:bg-gray-700 p-2 rounded w-full blo
 MENU_ITEMS = [
     {"icon": "🏠", "text": "Дашборд", "path": "/"},
     {"icon": "📊", "text": "Сигналы", "path": "/signals"},
+    {"icon": "🔄", "text": "Pivot", "path": "/pivot"},
     {"icon": "⚙️", "text": "Настройки", "path": "/settings"},
     {"icon": "▶️", "text": "Кнопки", "path": "/manual"},
     {"icon": "📋", "text": "Логи", "path": "/logs"},
-    {"icon": "⚠️", "text": "Предупреждения", "path": "/warnings"},
+    {"icon": "⚠️", "text": "Предупр.", "path": "/warnings"},
     {"icon": "🚨", "text": "Ошибки", "path": "/errors"},
 ]
 

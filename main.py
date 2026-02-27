@@ -5,6 +5,7 @@ from database.core import init_db
 from services.system import init_services, get_scheduler, get_file_watcher_service
 from ui.pages.dashboard import dashboard_page # Register Dashboard as Home
 from ui.pages.signals import signals_page # Register Signals page
+from ui.pages.pivot import pivot_page # Register Pivot page
 from ui.pages.settings import settings_page # Register page
 from ui.pages.manual_controls import manual_controls_page # Register Manual Controls page
 from ui.pages.logs import logs_page, init_logging # Register Logs page
