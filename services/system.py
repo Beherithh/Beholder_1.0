@@ -1,3 +1,5 @@
+from loguru import logger # Перемещено в начало файла
+
 from database.core import get_session
 from services.market_data import MarketDataService
 from services.scheduler import SchedulerService
@@ -50,7 +52,6 @@ async def init_services():
     telegram_service = TelegramService(token=tg_conf.bot_token, chat_id=tg_conf.chat_id)
     
     if tg_conf.bot_token and tg_conf.chat_id:
-        from loguru import logger
         logger.info("Telegram Service инициализирован настройками из БД.")
 
 def get_scheduler() -> SchedulerService:

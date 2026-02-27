@@ -156,7 +156,7 @@ class ManualControlsPage:
                 with ui.row().classes('w-full items-center justify-between p-4 bg-gray-50 rounded border'):
                     with ui.column().classes('gap-1'):
                         ui.label('1. Синхронизация отслеживаемых пар').classes('font-bold')
-                        ui.label('Синхронизирует пары из файлов и проверяет совпадение с уже известными Delisting/ST').classes('text-xs text-gray-500')
+                        ui.label('Синхронизирует пары и проверяет совпадение с уже известными Delisting/ST').classes('text-xs text-gray-500')
                     btn_sync = ui.button('Синхронизировать', on_click=lambda: self.run_sync(btn_sync)).props('color=grey dense size=md icon=sync')
 
                 # 2. OHLCV

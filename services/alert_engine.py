@@ -137,7 +137,6 @@ class AlertEngine:
         rate = rates.get(quote) if quote != "USDT" else 1.0
         
         if rate is None:
-            from loguru import logger
             logger.warning(f"Пропуск расчета объема для {pair.symbol}: курс {quote}/USDT недоступен.")
             return
 
@@ -177,7 +176,7 @@ class AlertEngine:
             elif "DUMP" in msg:
                 conditions.append(Signal.raw_message.like("%DUMP%"))
         # Для других типов (например VOLUME_ALERT) достаточно совпадения типа и pair_id
-        
+
         stmt = select(Signal).where(*conditions)
         existing = (await session.execute(stmt)).first()
         

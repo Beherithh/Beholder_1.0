@@ -1,6 +1,6 @@
 from nicegui import ui
 from ui.layout import create_header
-from ui.pages.logs import LOG_BUFFER, FilteredLogViewer, init_logging
+from ui.pages.logs import LOG_BUFFER, FilteredLogViewer
 
 # Глобальные переменные для страницы ошибок
 error_log_elements = []
@@ -11,7 +11,6 @@ def broadcast_error_log(message):
     """
     global error_log_elements
     
-    # Форматируем сообщение
     text = message
     try:
         if hasattr(message, 'record'):
@@ -34,10 +33,8 @@ def broadcast_error_log(message):
 @ui.page('/errors')
 def errors_page():
     create_header()
-    init_logging()
 
     with ui.column().classes('w-full h-screen p-4'):
-        # Заголовок
         with ui.row().classes('w-full justify-between items-center mb-4'):
             ui.label('Ошибки').classes('text-xl font-bold')
             ui.label('Только ERROR и CRITICAL (новые сверху)').classes('text-sm text-gray-400')
@@ -54,10 +51,9 @@ def errors_page():
         with ui.scroll_area().classes('w-full h-full bg-gray-900 rounded shadow-inner border border-gray-700'):
             log_container = ui.column().classes('w-full p-2 gap-1')
             
-        # Вьювер
         log_viewer = FilteredLogViewer(log_container, max_lines=500, levels=['ERROR', 'CRITICAL'])
         log_viewer.set_counter('ERROR', error_count)
-        log_viewer.set_counter('CRITICAL', error_count) # Используем тот же лейбл для критических
+        log_viewer.set_counter('CRITICAL', error_count)
         
         # Заполняем историей
         for line in LOG_BUFFER:

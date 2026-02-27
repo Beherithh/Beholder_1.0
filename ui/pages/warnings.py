@@ -1,6 +1,6 @@
 from nicegui import ui
 from ui.layout import create_header
-from ui.pages.logs import LOG_BUFFER, FilteredLogViewer, init_logging
+from ui.pages.logs import LOG_BUFFER, FilteredLogViewer
 
 # Глобальный список для активных элементов страницы предупреждений
 warning_log_elements = []
@@ -34,10 +34,8 @@ def broadcast_warning_log(message):
 @ui.page('/warnings')
 def warnings_page():
     create_header()
-    init_logging()
 
     with ui.column().classes('w-full h-screen p-4'):
-        # Заголовок
         with ui.row().classes('w-full justify-between items-center mb-4'):
             ui.label('Предупреждения').classes('text-xl font-bold')
             ui.label('Только WARNING (новые сверху)').classes('text-sm text-gray-400')
@@ -46,15 +44,12 @@ def warnings_page():
                 'bg-yellow-600 hover:bg-yellow-700 text-white px-4 py-2 rounded'
             )
         
-        # Статистика
         with ui.row().classes('w-full gap-4 mb-4'):
             warning_count = ui.label('WARNING: 0').classes('text-yellow-400 font-bold')
         
-        # Контейнер
         with ui.scroll_area().classes('w-full h-full bg-gray-900 rounded shadow-inner border border-gray-700'):
             log_container = ui.column().classes('w-full p-2 gap-1')
             
-        # Вьювер
         log_viewer = FilteredLogViewer(log_container, max_lines=500, levels=['WARNING'])
         log_viewer.set_counter('WARNING', warning_count)
         

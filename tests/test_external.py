@@ -18,13 +18,11 @@ class TestExternalIntegrations:
         scraper = WebScraper()
         url = "https://www.example.com"
         
-        print(f"\nFetching {url} via Selenium...")
         html = await scraper.fetch_html(url)
         
         assert html is not None
         assert len(html) > 0
         assert "Example Domain" in html
-        print("WebScraper successfully fetched the page.")
 
     async def test_gateio_api_structure(self):
         """

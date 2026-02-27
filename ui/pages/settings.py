@@ -3,6 +3,8 @@ import json
 from nicegui import ui
 from loguru import logger
 import os
+import sys
+import subprocess
 
 from database.core import get_session
 from database.models import AppSettings
@@ -318,6 +320,26 @@ class SettingsPage:
         else:
             ui.notify('Ошибка теста Telegram. Проверьте Token и Chat ID.', type='negative')
 
+    def create_pyrogram_session(self):
+        """Запускает скрипт create_session.py в новом окне консоли."""
+        try:
+            # Путь к интерпретатору Python, который запускает основное приложение
+            python_executable = sys.executable
+            # Путь к скрипту
+            script_path = os.path.join(os.path.dirname(sys.argv[0]), "create_session.py")
+
+            if not os.path.exists(script_path):
+                ui.notify("Скрипт create_session.py не найден!", type="negative")
+                return
+
+            # Для Windows: CREATE_NEW_CONSOLE создает новое окно консоли
+            subprocess.Popen([python_executable, script_path], creationflags=subprocess.CREATE_NEW_CONSOLE)
+            ui.notify("Запущено окно создания сессии. Следуйте инструкциям в нем.", type="info")
+
+        except Exception as e:
+            logger.error(f"Не удалось запустить create_session.py: {e}")
+            ui.notify(f"Ошибка запуска скрипта: {e}", type="negative")
+
     async def render(self):
         await self.load_settings()
         
@@ -357,7 +379,10 @@ class SettingsPage:
                 ui.input('API ID', placeholder='12345678').classes('w-40').bind_value(self, 'tg_api_id')
                 ui.input('API Hash', password=True, password_toggle_button=True, placeholder='0123456789abcdef...').classes('flex-grow').bind_value(self, 'tg_api_hash')
                 ui.button('Сохранить', on_click=self.save_settings).classes('h-10')
+                ui.button('Создать сессию', on_click=self.create_pyrogram_session, color='blue').tooltip('Запускает интерактивную консоль для входа в Telegram и создания .session файла')
             ui.label('Получите credentials на my.telegram.org → API development tools. Используется для парсинга @BinanceAnnouncements').classes('text-xs text-gray-400')
+            ui.label('Сессию нужно создать только 1 раз после добавления credentials').classes('text-xs text-gray-400')
+            ui.label('Можно оставить всё пустым - проверка Телеграма будет игнорироваться').classes('text-xs text-gray-400')
 
 
             # --- CoinMarketCap Settings ---

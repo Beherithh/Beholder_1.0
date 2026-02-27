@@ -1,50 +1,50 @@
 from nicegui import ui, app
 from loguru import logger
 
+# Централизованная настройка логирования
+from utils.logging_setup import init_logging
+init_logging()
+
 from database.core import init_db
 from services.system import init_services, get_scheduler, get_file_watcher_service
-from ui.pages.dashboard import dashboard_page # Register Dashboard as Home
-from ui.pages.signals import signals_page # Register Signals page
-from ui.pages.pivot import pivot_page # Register Pivot page
-from ui.pages.settings import settings_page # Register page
-from ui.pages.manual_controls import manual_controls_page # Register Manual Controls page
-from ui.pages.logs import logs_page, init_logging # Register Logs page
-from ui.pages.errors import errors_page # Register Errors page
-from ui.pages.warnings import warnings_page # Register Warnings page
+from ui.pages.dashboard import dashboard_page
+from ui.pages.signals import signals_page
+from ui.pages.pivot import pivot_page
+from ui.pages.settings import settings_page
+from ui.pages.manual_controls import manual_controls_page
+from ui.pages.logs import logs_page
+from ui.pages.errors import errors_page
+from ui.pages.warnings import warnings_page
 
 async def startup():
-    print("Initializing Database...")
+    logger.info("Initializing Database...")
     await init_db()
     
-    print("Starting services...")
+    logger.info("Starting services...")
     await init_services()
 
-    print("Syncing monitored pairs...")
+    logger.info("Syncing monitored pairs...")
     watcher = get_file_watcher_service()
     await watcher.sync_from_settings()
     
-    # Инициализация перехвата логов для UI
-    init_logging()
-
     # Добавляем оповещения (Toasts) для Warning/Error
     def ui_notification_sink(message):
         record = message.record
-        if record["level"].name in ("WARNING", "ERROR", "CRITICAL"):
-            try:
-                # Пытаемся отправить уведомление в текущий контекст UI
-                # Если вызвано из фоновой задачи без контекста, будет pass
-                ui.notify(record["message"], type='warning' if record["level"].name == "WARNING" else 'negative', position='bottom-right')
-            except:
-                pass
+        try:
+            ui.notify(record["message"], type='warning' if record["level"].name == "WARNING" else 'negative', position='bottom-right')
+        except:
+            pass
     
-    logger.add(ui_notification_sink)
+    # Этот обработчик добавляется после основной инициализации,
+    # так как он зависит от UI-контекста, который может быть не всегда доступен.
+    logger.add(ui_notification_sink, level="WARNING")
     
     # Запуск планировщика
     scheduler = get_scheduler()
     scheduler.start()
-    await scheduler.schedule_all() # Шедулим ВСЕ задачи (рынок + скрапер)
+    await scheduler.schedule_all()
     
-    print("Система Beholder запущена.")
+    logger.info("Система Beholder запущена.")
 
 app.on_startup(startup)
 

@@ -1,6 +1,6 @@
 import asyncio
 from loguru import logger
-from sqlmodel import select
+from sqlmodel import select, delete
 
 from database.models import (
     MonitoredPair, Signal, SignalType, RiskLevel, DelistingEvent,
@@ -81,6 +81,54 @@ class ScraperService:
                     logger.info(f"Signal already exists, skipping: {msg[:100]}...")
 
         return changed
+
+    async def _demote_orphaned_risks(self, session: AsyncSession):
+        """
+        Проверяет пары с повышенным риском и сбрасывает его, если нет активных событий.
+        Это исправляет ситуацию, когда DelistingEvent удаляется вручную из БД.
+        """
+        logger.info("Проверка и сброс 'осиротевших' рисков...")
+        
+        # 1. Находим все пары с риском выше нормы
+        risky_pairs_stmt = select(MonitoredPair).where(MonitoredPair.risk_level != RiskLevel.NORMAL)
+        risky_pairs = (await session.execute(risky_pairs_stmt)).scalars().all()
+
+        if not risky_pairs:
+            logger.info("Пар с повышенным риском не найдено.")
+            return
+
+        # 2. Собираем их базовые валюты и все связанные с ними события
+        base_symbols = list({p.symbol.split('/')[0] for p in risky_pairs})
+        events_stmt = select(DelistingEvent).where(DelistingEvent.symbol.in_(base_symbols))
+        all_events = (await session.execute(events_stmt)).scalars().all()
+        
+        # Создаем множество символов, у которых ДЕЙСТВИТЕЛЬНО есть события
+        symbols_with_events = {event.symbol for event in all_events}
+
+        demoted_count = 0
+        # 3. Ищем "сирот"
+        for pair in risky_pairs:
+            base_currency = pair.symbol.split('/')[0]
+            if base_currency not in symbols_with_events:
+                logger.warning(f"Сброс риска для {pair.symbol}: нет активных событий Delisting/ST. "
+                               f"Текущий риск: {pair.risk_level.name}")
+                
+                # Сбрасываем риск
+                pair.risk_level = RiskLevel.NORMAL
+                session.add(pair)
+                demoted_count += 1
+                
+                # Удаляем старые сигналы, связанные с этим
+                await session.execute(delete(Signal).where(
+                    Signal.pair_id == pair.id,
+                    Signal.type.in_([SignalType.DELISTING_WARNING, SignalType.ST_WARNING])
+                ))
+
+        if demoted_count > 0:
+            await session.commit()
+            logger.success(f"Сброшен риск для {demoted_count} пар.")
+        else:
+            logger.info("'Осиротевших' рисков не найдено.")
 
     async def match_monitored_pairs_with_events(self, session: AsyncSession):
         """
@@ -173,22 +221,23 @@ class ScraperService:
         """
         logger.info("=== Запуск полной проверки рисков Delistings + ST ===")
         
-        # Автоматическая синхронизация файлов перед проверкой
         try:
+            # 0. Синхронизация и очистка
             logger.info("Синхронизация списка пар из файлов...")
             from services.file_watcher import FileWatcherService
             watcher = FileWatcherService(get_session)
             stats = await watcher.sync_from_settings()
             logger.info(f"Синхронизация завершена: {stats}")
             
-            # Быстрый матч с существующими событиями
             async with get_session() as session:
+                # Сначала сбрасываем риски, для которых больше нет событий
+                await self._demote_orphaned_risks(session)
+                # Затем матчим существующие пары с существующими событиями
                 matches = await self.match_monitored_pairs_with_events(session)
                 logger.info(f"Найдено совпадений с историей: {matches}")
+
         except Exception as e:
-            logger.error(f"Ошибка синхронизации файлов: {e}")
-        
-        # Основные проверки
+            logger.error(f"Ошибка на этапе синхронизации и очистки: {e}")
         
         # 1. Telegram
         tg_events = await self.telegram_monitor.check_binance_telegram_channel()
