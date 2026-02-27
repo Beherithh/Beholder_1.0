@@ -29,9 +29,6 @@ async def get_dashboard_data() -> Dict[str, Any]:
         data_rows = []
         stats = {"total": len(pairs), "risk": 0, "delist": 0}
         
-        # Кэшируем последние цены для оптимизации (одним запросом сложно из-за group by, но можно)
-        # Пока оставим в цикле, но оптимизируем запросы алертов
-        
         # Поиск недавних алертов для всех пар сразу (за последние 10 дней)
         alerts_cutoff = datetime.now(timezone.utc) - timedelta(days=10)
         
@@ -39,7 +36,7 @@ async def get_dashboard_data() -> Dict[str, Any]:
         signals_stmt = select(Signal).where(Signal.created_at >= alerts_cutoff)
         recent_signals = (await session.execute(signals_stmt)).scalars().all()
         
-        # Группируем сигналы по pair_id (если есть) или по тексту
+        # Группируем сигналы по pair_id
         price_alerts_map = {}
         volume_alerts_map = {}
         muted_risk_alerts_map = set()
@@ -95,7 +92,7 @@ async def get_dashboard_data() -> Dict[str, Any]:
             elif pair.risk_level in [RiskLevel.CROSS_RISK]:
                 risk_color = "text-yellow-600 font-medium"
 
-            # Алерты (используем map)
+            # Алерты
             price_alert_msg = price_alerts_map.get(pair.id)
             volume_alert_msg = volume_alerts_map.get(pair.id)
             is_risk_muted = pair.id in muted_risk_alerts_map
@@ -145,31 +142,12 @@ async def dashboard_page():
         "search_text": ""
     }
     
-    # UI элементы, которые нужно обновлять
+    # UI элементы
     stats_labels = {}
     table_ref = None
 
-    async def refresh_data():
-        data = await get_dashboard_data()
-        state["full_data"] = data["rows"]
-        
-        # Обновляем статистику
-        stats = data["stats"]
-        stats_labels['total'].text = str(stats['total'])
-        stats_labels['risk'].text = str(stats['risk'])
-        stats_labels['delist'].text = str(stats['delist'])
-        
-        # Обновляем фильтры (опции)
-        exchanges = ['Все'] + sorted(list(set(r['exchange'] for r in state["full_data"])))
-        statuses = ['Все', 'Все кроме NORMAL'] + sorted(list(set(r['risk_level'] for r in state["full_data"])))
-        
-        ex_select.options = exchanges
-        st_select.options = statuses
-        
-        apply_filters()
-        ui.notify('Данные обновлены', type='info')
-
     def apply_filters():
+        """Применение фильтров к данным таблицы"""
         filtered = state["full_data"]
         
         if state["filter_exchange"] != 'Все':
@@ -181,21 +159,39 @@ async def dashboard_page():
             filtered = [r for r in filtered if r['risk_level'] == state["filter_status"]]
             
         if state["search_text"]:
-            search = state["search_text"].lower()
-            filtered = [r for r in filtered if search in str(r.values()).lower()]
+            search = str(state["search_text"]).lower()
+            filtered = [r for r in filtered if search in str(list(r.values())).lower()]
 
         if table_ref:
             table_ref.rows = filtered
+            table_ref.update()
+
+    async def refresh_data():
+        """Загрузка свежих данных из БД"""
+        data = await get_dashboard_data()
+        state["full_data"] = data["rows"]
+        
+        # Обновляем статистику
+        stats = data["stats"]
+        stats_labels['total'].text = str(stats['total'])
+        stats_labels['risk'].text = str(stats['risk'])
+        stats_labels['delist'].text = str(stats['delist'])
+        
+        # Обновляем опции фильтров
+        exchanges = ['Все'] + sorted(list(set(r['exchange'] for r in state["full_data"])))
+        statuses = ['Все', 'Все кроме NORMAL'] + sorted(list(set(r['risk_level'] for r in state["full_data"])))
+        
+        ex_select.options = exchanges
+        st_select.options = statuses
+        
+        apply_filters()
+        ui.notify('Данные обновлены', type='info')
 
     def reset_filters():
+        """Сброс фильтров"""
         state["filter_exchange"] = 'Все'
         state["filter_status"] = 'Все'
         state["search_text"] = ''
-        
-        ex_select.value = 'Все'
-        st_select.value = 'Все'
-        search_input.value = ''
-        
         apply_filters()
 
     # --- UI Layout ---
@@ -222,15 +218,23 @@ async def dashboard_page():
 
             ui.space()
 
-            # Фильтры
-            search_input = ui.input(placeholder='Поиск...').classes('w-48').props('dense outlined')
-            search_input.on('update:model-value', lambda e: [state.update({"search_text": e.args}), apply_filters()])
+            # Фильтры с использованием bind_value и on_change
+            search_input = ui.input(
+                placeholder='Поиск...',
+                on_change=apply_filters
+            ).classes('w-48').props('dense outlined').bind_value(state, 'search_text')
 
-            ex_select = ui.select(['Все'], label='Биржа', value='Все').classes('w-28').props('dense outlined')
-            ex_select.on('update:model-value', lambda e: [state.update({"filter_exchange": e.args}), apply_filters()])
+            ex_select = ui.select(
+                ['Все'], 
+                label='Биржа', 
+                on_change=apply_filters
+            ).classes('w-28').props('dense outlined').bind_value(state, 'filter_exchange')
 
-            st_select = ui.select(['Все'], label='Статус', value='Все').classes('w-36').props('dense outlined')
-            st_select.on('update:model-value', lambda e: [state.update({"filter_status": e.args}), apply_filters()])
+            st_select = ui.select(
+                ['Все'], 
+                label='Статус', 
+                on_change=apply_filters
+            ).classes('w-36').props('dense outlined').bind_value(state, 'filter_status')
             
             ui.button(icon='restart_alt', on_click=reset_filters).props('flat round dense')
 

@@ -75,8 +75,7 @@ class SignalsPage:
             })
             
         if self.table:
-            # Если вызывается напрямую без фильтров, не применяем их, 
-            # но лучше переопределить эту логику через apply_filters (см. ниже)
+            # Обновляем базовый набор строк
             self.table.rows[:] = self.full_rows
             self.table.update()
 
@@ -97,6 +96,7 @@ class SignalsPage:
                 'type_raw': s.type
             })
 
+        # Состояние фильтров
         state = {
             "search_text": "",
             "filter_exchange": "Все",
@@ -104,6 +104,7 @@ class SignalsPage:
         }
 
         def apply_filters():
+            """Применение фильтров к таблице"""
             filtered = self.full_rows
             
             if state["filter_exchange"] != 'Все':
@@ -113,27 +114,28 @@ class SignalsPage:
                 filtered = [r for r in filtered if r['type'] == state["filter_type"]]
                 
             if state["search_text"]:
-                search = state["search_text"].lower()
+                search = str(state["search_text"]).lower()
                 filtered = [r for r in filtered if search in r['symbol'].lower() or search in r['message'].lower()]
 
             if self.table:
                 self.table.rows = filtered
+                self.table.update()
 
         def reset_filters():
+            """Сброс всех фильтров в исходное состояние"""
             state["filter_exchange"] = 'Все'
             state["filter_type"] = 'Все'
             state["search_text"] = ''
             
-            ex_select.value = 'Все'
-            type_select.value = 'Все'
-            search_input.value = ''
-            
+            # Благодаря bind_value, UI обновится автоматически при изменении state
+            # Но для надежности вызываем apply_filters
             apply_filters()
 
         async def refresh_and_filter():
+            """Полное обновление данных с сохранением фильтрации"""
             await self.refresh_table()
             
-            # Обновляем опции дропдаунов
+            # Обновляем опции дропдаунов на основе новых данных
             exchanges = ['Все'] + sorted(list(set(r['exchange'] for r in self.full_rows if r['exchange'] != '-')))
             types = ['Все'] + sorted(list(set(r['type'] for r in self.full_rows)))
             
@@ -143,7 +145,6 @@ class SignalsPage:
             apply_filters()
             ui.notify('Сигналы обновлены', type='info')
             
-        # Кастомный метод toggle, обновляющий фильтры после сохранения
         async def handle_toggle_mute(signal_id):
             await self.toggle_mute_signal(signal_id)
             apply_filters()
@@ -162,14 +163,22 @@ class SignalsPage:
             initial_types = ['Все'] + sorted(list(set(r['type'] for r in self.full_rows)))
 
             with ui.row().classes('w-full gap-2 items-center mb-4 wrap'):
-                search_input = ui.input(placeholder='Поиск пары / текста...').classes('w-48').props('dense outlined')
-                search_input.on('update:model-value', lambda e: [state.update({"search_text": e.args}), apply_filters()])
+                search_input = ui.input(
+                    placeholder='Поиск пары / текста...',
+                    on_change=apply_filters
+                ).classes('w-48').props('dense outlined').bind_value(state, 'search_text')
 
-                ex_select = ui.select(initial_exchanges, label='Биржа', value='Все').classes('w-32').props('dense outlined')
-                ex_select.on('update:model-value', lambda e: [state.update({"filter_exchange": e.args}), apply_filters()])
+                ex_select = ui.select(
+                    initial_exchanges, 
+                    label='Биржа', 
+                    on_change=apply_filters
+                ).classes('w-32').props('dense outlined').bind_value(state, 'filter_exchange')
 
-                type_select = ui.select(initial_types, label='Тип алерта', value='Все').classes('w-40').props('dense outlined')
-                type_select.on('update:model-value', lambda e: [state.update({"filter_type": e.args}), apply_filters()])
+                type_select = ui.select(
+                    initial_types, 
+                    label='Тип алерта', 
+                    on_change=apply_filters
+                ).classes('w-40').props('dense outlined').bind_value(state, 'filter_type')
                 
                 ui.button(icon='restart_alt', on_click=reset_filters).props('flat round dense')
 
@@ -179,7 +188,7 @@ class SignalsPage:
                 {'name': 'symbol', 'label': 'Пара', 'field': 'symbol', 'sortable': True, 'align': 'center'},
                 {'name': 'type', 'label': 'Тип', 'field': 'type', 'sortable': True, 'align': 'center'},
                 {'name': 'sent', 'label': 'Отправлен', 'field': 'sent', 'sortable': True, 'align': 'center'},
-                {'name': 'message', 'label': 'Сообщение', 'field': 'message', 'align': 'left', 'classes': 'whitespace-pre-line max-w-md break-words'},
+                {'name': 'message', 'label': 'Сообщение', 'field': 'message', 'align': 'left', 'classes': 'whitespace-pre-line max-w-xs break-words'},
                 {'name': 'actions', 'label': 'Действия', 'field': 'id', 'align': 'center'},
             ]
 
