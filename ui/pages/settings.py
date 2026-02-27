@@ -384,7 +384,6 @@ class SettingsPage:
             ui.label('Сессию нужно создать только 1 раз после добавления credentials').classes('text-xs text-gray-400')
             ui.label('Можно оставить всё пустым - проверка Телеграма будет игнорироваться').classes('text-xs text-gray-400')
 
-
             # --- CoinMarketCap Settings ---
             ui.separator().classes('my-4')
             with ui.row().classes('items-center gap-2'):
