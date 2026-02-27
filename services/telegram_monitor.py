@@ -1,3 +1,5 @@
+import os
+import asyncio
 from loguru import logger
 from sqlmodel import select
 
@@ -32,6 +34,12 @@ class TelegramMonitorService:
             logger.warning("Telegram API credentials не настроены. Пропуск проверки @binance_announcements")
             return 0
             
+        # Проверка наличия файла сессии
+        session_file = "beholder_telegram.session"
+        if not os.path.exists(session_file):
+            logger.warning(f"Файл сессии '{session_file}' не найден. Создайте сессию через Настройки -> Telegram API.")
+            return 0
+
         async with self.session_factory() as session:
             # Get last processed message ID
             last_msg_id_setting = await session.get(AppSettings, "binance_tg_last_message_id")
@@ -40,9 +48,12 @@ class TelegramMonitorService:
             logger.info(f"Checking @binance_announcements (last message ID: {last_msg_id})...")
             
             new_events = 0
-            latest_id = last_msg_id
             
-            try:
+            # Внутренняя функция для работы с клиентом
+            async def run_client_logic():
+                nonlocal new_events
+                latest_id = last_msg_id
+                
                 # Create Pyrogram client
                 app = Client(
                     "beholder_telegram",
@@ -123,8 +134,8 @@ class TelegramMonitorService:
                 # Update last processed message ID
                 if latest_id > last_msg_id:
                     if not last_msg_id_setting:
-                        last_msg_id_setting = AppSettings(key="binance_tg_last_message_id", value=str(latest_id))
-                        session.add(last_msg_id_setting)
+                        new_setting = AppSettings(key="binance_tg_last_message_id", value=str(latest_id))
+                        session.add(new_setting)
                     else:
                         last_msg_id_setting.value = str(latest_id)
                     await session.commit()
@@ -132,7 +143,13 @@ class TelegramMonitorService:
                 
                 logger.info(f"[BINANCE-TG] Scanned {messages_count} messages. Found {new_events} new delisting events.")
                 return new_events
-                
+
+            try:
+                # Запускаем с таймаутом 60 секунд
+                return await asyncio.wait_for(run_client_logic(), timeout=60.0)
+            except asyncio.TimeoutError:
+                logger.error("[BINANCE-TG] Timeout connecting to Telegram (60s). Skipping.")
+                return 0
             except Exception as e:
                 logger.error(f"[BINANCE-TG] Error reading channel: {e}")
                 return 0

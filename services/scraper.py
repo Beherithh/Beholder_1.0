@@ -240,21 +240,30 @@ class ScraperService:
             logger.error(f"Ошибка на этапе синхронизации и очистки: {e}")
         
         # 1. Telegram
-        tg_events = await self.telegram_monitor.check_binance_telegram_channel()
-        if tg_events > 0:
-            async with get_session() as session:
-                await self.match_monitored_pairs_with_events(session)
+        try:
+            tg_events = await self.telegram_monitor.check_binance_telegram_channel()
+            if tg_events > 0:
+                async with get_session() as session:
+                    await self.match_monitored_pairs_with_events(session)
+        except Exception as e:
+            logger.error(f"Ошибка при проверке Telegram: {e}")
 
         # 2. Web Scraping (Blogs)
-        blog_events = await self.blog_scraper.check_delistings_blog()
-        if blog_events > 0:
-            async with get_session() as session:
-                await self.match_monitored_pairs_with_events(session)
+        try:
+            blog_events = await self.blog_scraper.check_delistings_blog()
+            if blog_events > 0:
+                async with get_session() as session:
+                    await self.match_monitored_pairs_with_events(session)
+        except Exception as e:
+            logger.error(f"Ошибка при проверке блогов: {e}")
         
         # 3. API Checks
-        api_changes = await self.api_risk_checker.check_api_risks()
-        if api_changes:
-             async with get_session() as session:
-                await self.match_monitored_pairs_with_events(session)
+        try:
+            api_changes = await self.api_risk_checker.check_api_risks()
+            if api_changes:
+                 async with get_session() as session:
+                    await self.match_monitored_pairs_with_events(session)
+        except Exception as e:
+            logger.error(f"Ошибка при проверке API: {e}")
 
         logger.info("=== Полная проверка рисков Delistings + ST завершена ===")
