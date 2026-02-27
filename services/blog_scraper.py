@@ -138,11 +138,12 @@ class BlogScraperService:
                         logger.info(f"[{ex_name}] Found {len(unique_links)} candidate articles.")
                         
                         for url, title in unique_links.items():
-                            # 1. Проверяем заголовок на наличие триггеров
+                            # 1. Проверяем заголовок и URL на наличие триггеров
                             title_lower = title.lower()
+                            url_lower = url.lower()
                             
-                            # Проверяем на исключаемые слова (convert, futures)
-                            if any(k in title_lower for k in self.article_parser.IGNORE_KEYWORDS):
+                            # Проверяем на исключаемые слова (convert, futures) в заголовке и URL
+                            if any(k in title_lower or k in url_lower for k in self.article_parser.IGNORE_KEYWORDS):
                                 continue
                                 
                             # Проверяем на ключевые слова (Delisting или ST)
