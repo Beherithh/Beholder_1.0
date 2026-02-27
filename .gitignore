@@ -54,3 +54,4 @@ beholder_telegram.session
 database.db-shm
 database.db-wal
 /nssm.exe
+/secret.key
