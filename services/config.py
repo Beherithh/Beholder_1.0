@@ -2,6 +2,7 @@ from typing import Optional, List, Dict
 import json
 from pydantic import BaseModel
 from database.models import AppSettings
+from services.security import SecurityService
 
 class TelegramConfig(BaseModel):
     """DTO для настроек Telegram"""
@@ -53,15 +54,22 @@ class ConfigService:
         setting = await session.get(AppSettings, key)
         return setting.value if setting and setting.value != 'None' else default
 
+    async def _get_secret(self, session, key: str) -> Optional[str]:
+        """
+        Приватный хелпер для получения зашифрованной строки.
+        Автоматически расшифровывает значение.
+        """
+        val = await self._get_str(session, key)
+        if val:
+            return SecurityService.decrypt(val)
+        return None
+
     async def _get_int(self, session, key: str, default: Optional[int] = None) -> Optional[int]:
         """
         Приватный хелпер для получения int.
-        Если default=None, вернет None при отсутствии значения.
-        Если default=число, вернет это число при отсутствии значения.
         """
         val = await self._get_str(session, key)
         try:
-            # int(float(val)) позволяет парсить строки вида "5.0" как 5
             return int(float(val)) if val else default
         except (ValueError, TypeError):
             return default
@@ -69,7 +77,6 @@ class ConfigService:
     async def _get_float(self, session, key: str, default: Optional[float] = None) -> Optional[float]:
         """
         Приватный хелпер для получения float.
-        Работает аналогично _get_int.
         """
         val = await self._get_str(session, key)
         try:
@@ -80,10 +87,10 @@ class ConfigService:
     async def get_telegram_config(self) -> TelegramConfig:
         async with self.session_factory() as session:
             return TelegramConfig(
-                bot_token=await self._get_str(session, "tg_bot_token"),
-                chat_id=await self._get_str(session, "tg_chat_id"),
-                api_id=await self._get_str(session, "tg_api_id"),
-                api_hash=await self._get_str(session, "tg_api_hash"),
+                bot_token=await self._get_secret(session, "tg_bot_token"),
+                chat_id=await self._get_secret(session, "tg_chat_id"),
+                api_id=await self._get_secret(session, "tg_api_id"),
+                api_hash=await self._get_secret(session, "tg_api_hash"),
             )
 
     async def get_alert_config(self) -> AlertConfig:
@@ -107,7 +114,7 @@ class ConfigService:
     async def get_cmc_config(self) -> CMCConfig:
         async with self.session_factory() as session:
             return CMCConfig(
-                api_key=await self._get_str(session, "cmc_api_key"),
+                api_key=await self._get_secret(session, "cmc_api_key"),
                 rank_threshold=await self._get_int(session, "cmc_rank_threshold", default=500),
                 update_interval_days=await self._get_int(session, "cmc_update_interval_days", default=5)
             )

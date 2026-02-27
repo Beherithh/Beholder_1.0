@@ -4,6 +4,7 @@ from loguru import logger
 # Важно: Скрипт должен иметь доступ к моделям и ядру БД
 from database.core import get_session
 from database.models import AppSettings
+from services.security import SecurityService
 
 async def main():
     """
@@ -19,10 +20,15 @@ async def main():
         async with get_session() as session:
             id_setting = await session.get(AppSettings, "tg_api_id")
             hash_setting = await session.get(AppSettings, "tg_api_hash")
+            
             if id_setting and id_setting.value:
-                api_id = id_setting.value
+                # Расшифровываем значение
+                api_id = SecurityService.decrypt(id_setting.value)
+            
             if hash_setting and hash_setting.value:
-                api_hash = hash_setting.value
+                # Расшифровываем значение
+                api_hash = SecurityService.decrypt(hash_setting.value)
+
     except Exception as e:
         print(f"\n[ОШИБКА] Не удалось подключиться к базе данных: {e}")
         input("\nНажмите Enter для выхода...")

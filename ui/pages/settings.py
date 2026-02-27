@@ -10,6 +10,7 @@ from database.core import get_session
 from database.models import AppSettings
 from services.file_watcher import FileWatcherService
 from services.system import get_scraper_service, get_config_service, get_scheduler
+from services.security import SecurityService
 from ui.layout import create_header
 
 class SettingsPage:
@@ -95,14 +96,25 @@ class SettingsPage:
                 else:
                     obj.value = str(value)
 
+            async def set_secret(key, value):
+                """Шифрует и сохраняет значение"""
+                if value:
+                    encrypted_val = SecurityService.encrypt(str(value))
+                    if str(value) == encrypted_val:
+                         logger.error(f"ALARM! {key} was NOT encrypted!")
+                else:
+                    encrypted_val = ""
+                
+                await set_val(key, encrypted_val)
+
             # Сохраняем список файлов в БД
             await set_val("watched_files", json.dumps(self.files_list))
             
-            # Сохраняем настройки Telegram
-            await set_val("tg_bot_token", self.tg_token)
-            await set_val("tg_chat_id", self.tg_chat_id)
-            await set_val("tg_api_id", self.tg_api_id)
-            await set_val("tg_api_hash", self.tg_api_hash)
+            # Сохраняем настройки Telegram (шифруем)
+            await set_secret("tg_bot_token", self.tg_token)
+            await set_secret("tg_chat_id", self.tg_chat_id)
+            await set_secret("tg_api_id", self.tg_api_id)
+            await set_secret("tg_api_hash", self.tg_api_hash)
 
             # Сохраняем алерты
             await set_val("alert_price_hours_pump_period", self.alert_price_hours_pump_period)
@@ -115,8 +127,9 @@ class SettingsPage:
             await set_val("alert_price_days_dump_threshold", self.alert_price_days_dump_threshold)
             await set_val("alert_volume_days_period", self.alert_volume_days_period)
             await set_val("alert_volume_days_threshold", self.alert_volume_days_threshold)
-            # Сохраняем настройки CMC
-            await set_val("cmc_api_key", self.cmc_api_key)
+            
+            # Сохраняем настройки CMC (шифруем API Key)
+            await set_secret("cmc_api_key", self.cmc_api_key)
             await set_val("cmc_rank_threshold", self.cmc_rank_threshold)
             
             # Сохраняем настройки планировщика
