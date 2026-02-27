@@ -41,6 +41,9 @@ class TestScraperService:
     async def test_check_all_risks_calls_subsystems(self, scraper_service):
         """Проверка, что check_all_risks вызывает все подсистемы"""
         
+        # Мокаем _demote_orphaned_risks, чтобы он не лез в БД и не вызывал ошибку
+        scraper_service._demote_orphaned_risks = AsyncMock()
+
         # Патчим FileWatcherService, так как он импортируется внутри метода
         with patch('services.file_watcher.FileWatcherService') as MockFileWatcher:
             mock_watcher = MockFileWatcher.return_value
@@ -53,6 +56,9 @@ class TestScraperService:
             scraper_service.blog_scraper.check_delistings_blog.assert_called_once()
             scraper_service.api_risk_checker.check_api_risks.assert_called_once()
             
+            # Проверяем, что _demote_orphaned_risks вызвался
+            scraper_service._demote_orphaned_risks.assert_called_once()
+
             # Проверяем, что матчинг вызвался (хотя бы раз, так как мы замокали возвраты 0)
             # В текущей логике матчинг вызывается, если есть события.
             # Но в check_all_risks есть вызов match_monitored_pairs_with_events в блоке try/except
