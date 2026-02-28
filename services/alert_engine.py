@@ -34,13 +34,20 @@ class AlertEngine:
             ("days", "dump", config.d_dump_period, config.d_dump_threshold),
         ]
 
-        has_pump = False
-        has_dump = False
+        # Собираем шаблоны активных конфигураций для очистки "сирот" одним запросом
+        active_patterns = set()
 
         for period_type, direction_type, period_val, threshold in checks:
             if period_val is None or threshold is None or threshold <= 0:
                 continue
             
+            period_str = f"in {period_val} {period_type}"
+            direction_tag = "PUMP" if direction_type == "pump" else "DUMP"
+            
+            # Добавляем паттерн, который мы будем "защищать" от удаления
+            # Например: "%PUMP%in 6 hours%"
+            active_patterns.add(f"%{direction_tag}%{period_str}%")
+
             delta = timedelta(hours=period_val) if period_type == "hours" else timedelta(days=period_val)
             since_time = now - delta
             
@@ -51,68 +58,76 @@ class AlertEngine:
             ).order_by(MarketData.timestamp.asc())
             candles = (await session.execute(stmt)).scalars().all()
             
-            if len(candles) < 2: continue
-            
-            # Ищем Min и Max
-            min_candle = min(candles, key=lambda x: x.low)
-            max_candle = max(candles, key=lambda x: x.high)
-            
-            # Нормализуем timestamp для корректного сравнения
-            min_time = min_candle.timestamp
-            max_time = max_candle.timestamp
-            if min_time.tzinfo is None:
-                min_time = min_time.replace(tzinfo=timezone.utc)
-            if max_time.tzinfo is None:
-                max_time = max_time.replace(tzinfo=timezone.utc)
-            
-            p_min = min_candle.low
-            p_max = max_candle.high
-            
-            if p_max == 0 or p_min == 0: continue
-            
-            change = 0.0
+            is_triggered = False
             alert_msg = ""
             
-            if direction_type == "dump":
-                if max_time < min_time:
-                     change = (p_min / p_max - 1) * 100
-                     if abs(change) >= threshold:
-                        has_dump = True
-                        alert_msg = f"📉 DUMP <b>{pair.symbol}</b> \n" \
-                                    f"({pair.exchange}): {pair.source_label}\n" \
-                                    f"<b>{change:+.0f}%</b> in {period_val} {period_type}\n" \
-                                    f"Min: {p_min} | Max: {p_max}"
-            
-            elif direction_type == "pump":
-                 if min_time < max_time:
-                     change = (p_max / p_min - 1) * 100
-                     if change >= threshold:
-                        has_pump = True
-                        alert_msg = f"📈 PUMP <b>{pair.symbol}</b> \n" \
-                                    f"({pair.exchange}): {pair.source_label}\n" \
-                                    f"<b>{change:+.0f}%</b> in {period_val} {period_type}\n" \
-                                    f"Min: {p_min} | Max: {p_max}"
-
-            if alert_msg:
-                await self._create_signal_if_new(session, SignalType.PRICE_CHANGE, alert_msg, pair.id)
+            if len(candles) >= 2:
+                # Ищем Min и Max
+                min_candle = min(candles, key=lambda x: x.low)
+                max_candle = max(candles, key=lambda x: x.high)
                 
-        # "Stateful" очистка: Если ни одного дампа не обнаружено, удаляем все старые алерты DUMP по этой паре
-        if not has_dump:
-            await session.execute(delete(Signal).where(
-                Signal.pair_id == pair.id, 
-                Signal.type == SignalType.PRICE_CHANGE,
-                Signal.raw_message.like("%DUMP%")
-            ))
-            await session.commit()
+                # Нормализуем timestamp для корректного сравнения
+                min_time = min_candle.timestamp
+                max_time = max_candle.timestamp
+                if min_time.tzinfo is None:
+                    min_time = min_time.replace(tzinfo=timezone.utc)
+                if max_time.tzinfo is None:
+                    max_time = max_time.replace(tzinfo=timezone.utc)
+                
+                p_min = min_candle.low
+                p_max = max_candle.high
+                
+                if p_max > 0 and p_min > 0:
+                    change = 0.0
+                    
+                    if direction_type == "dump":
+                        if max_time < min_time:
+                             change = (p_min / p_max - 1) * 100
+                             if abs(change) >= threshold:
+                                is_triggered = True
+                                alert_msg = f"📉 DUMP <b>{pair.symbol}</b> \n" \
+                                            f"({pair.exchange}): {pair.source_label}\n" \
+                                            f"<b>{change:+.0f}%</b> {period_str}\n" \
+                                            f"Min: {p_min} | Max: {p_max}"
+                    
+                    elif direction_type == "pump":
+                         if min_time < max_time:
+                             change = (p_max / p_min - 1) * 100
+                             if change >= threshold:
+                                is_triggered = True
+                                alert_msg = f"📈 PUMP <b>{pair.symbol}</b> \n" \
+                                            f"({pair.exchange}): {pair.source_label}\n" \
+                                            f"<b>{change:+.0f}%</b> {period_str}\n" \
+                                            f"Min: {p_min} | Max: {p_max}"
+
+            if is_triggered:
+                await self._create_signal_if_new(session, SignalType.PRICE_CHANGE, alert_msg, pair.id, unique_filter=period_str)
+            else:
+                # Если условие перестало выполняться для ЭТОГО конкретного периода и направления - удаляем
+                await session.execute(delete(Signal).where(
+                    Signal.pair_id == pair.id, 
+                    Signal.type == SignalType.PRICE_CHANGE,
+                    Signal.raw_message.like(f"%{direction_tag}%"),
+                    Signal.raw_message.like(f"%{period_str}%")
+                ))
+                await session.commit()
+        
+        # Очистка "осиротевших" алертов (Config Change Cleanup)
+        # Удаляем все сигналы PUMP/DUMP для этой пары, которые НЕ соответствуют ни одной из активных конфигураций.
+        # Это обрабатывает случаи:
+        # 1. Смена периода (6h -> 7h): старый "in 6 hours" удалится.
+        # 2. Отключение типа (Pump выкл): старый "PUMP" удалится.
+        
+        cleanup_stmt = delete(Signal).where(
+            Signal.pair_id == pair.id,
+            Signal.type == SignalType.PRICE_CHANGE
+        )
+        
+        for pattern in active_patterns:
+            cleanup_stmt = cleanup_stmt.where(Signal.raw_message.notlike(pattern))
             
-        # Аналогично для пампа
-        if not has_pump:
-            await session.execute(delete(Signal).where(
-                Signal.pair_id == pair.id, 
-                Signal.type == SignalType.PRICE_CHANGE,
-                Signal.raw_message.like("%PUMP%")
-            ))
-            await session.commit()
+        await session.execute(cleanup_stmt)
+        await session.commit()
 
     async def _check_volume_alerts(self, session: AsyncSession, pair: MonitoredPair, config: AlertConfig, rates: dict):
         """Проверка алертов по объему"""
@@ -161,8 +176,12 @@ class AlertEngine:
             ))
             await session.commit()
 
-    async def _create_signal_if_new(self, session: AsyncSession, sig_type: SignalType, msg: str, pair_id: int | None = None):
+    async def _create_signal_if_new(self, session: AsyncSession, sig_type: SignalType, msg: str, pair_id: int | None = None, unique_filter: str | None = None):
         """Создает сигнал в БД и отправляет в ТГ, если такого сообщения еще нет в активном пуле"""
+        if pair_id is None:
+            logger.error(f"Attempted to create signal with pair_id=None! Msg: {msg}")
+            return
+
         # Базовое условие: тот же тип, та же пара
         conditions = [
             Signal.type == sig_type,
@@ -175,19 +194,30 @@ class AlertEngine:
                 conditions.append(Signal.raw_message.like("%PUMP%"))
             elif "DUMP" in msg:
                 conditions.append(Signal.raw_message.like("%DUMP%"))
+            
+            # Уточняем поиск по периоду (чтобы 30d не блокировался 6h)
+            if unique_filter:
+                conditions.append(Signal.raw_message.like(f"%{unique_filter}%"))
         # Для других типов (например VOLUME_ALERT) достаточно совпадения типа и pair_id
 
         stmt = select(Signal).where(*conditions)
         existing = (await session.execute(stmt)).first()
         
         if not existing:
-            new_sig = Signal(type=sig_type, pair_id=pair_id, raw_message=msg)
-            session.add(new_sig)
-            await session.commit()
-            await session.refresh(new_sig)
-            
-            logger.warning(f"NEW ANALYSIS SIGNAL: {msg}")
-            
-            # Импорт внутри метода во избежание циклической зависимости
-            from services.notifications import send_and_log_signal
-            asyncio.create_task(send_and_log_signal(new_sig.id, msg, prefix=""))
+            try:
+                new_sig = Signal(type=sig_type, pair_id=pair_id, raw_message=msg)
+                session.add(new_sig)
+                await session.commit()
+                await session.refresh(new_sig)
+                
+                logger.warning(f"NEW ANALYSIS SIGNAL: {msg}")
+                
+                # Импорт внутри метода во избежание циклической зависимости
+                from services.notifications import send_and_log_signal
+                asyncio.create_task(send_and_log_signal(new_sig.id, msg, prefix=""))
+            except Exception as e:
+                logger.error(f"Failed to save signal to DB: {e}")
+                await session.rollback()
+        else:
+            # Логируем, что сигнал уже существует, чтобы было понятно, почему не создается новый
+            logger.info(f"Signal already exists (ID: {existing[0].id}), skipping creation. Msg: {msg[:50]}...")
