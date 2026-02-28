@@ -3,6 +3,8 @@ import json
 from nicegui import ui
 from loguru import logger
 import os
+import sys
+import subprocess
 
 from database.core import get_session
 from database.models import AppSettings
@@ -10,6 +12,11 @@ from services.file_watcher import FileWatcherService
 from services.system import get_scraper_service, get_config_service, get_scheduler
 from services.security import SecurityService
 from ui.layout import create_header
+
+# Вычисляем абсолютный путь к корню проекта
+# settings.py находится в ui/pages/, поэтому поднимаемся на 3 уровня вверх
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+logger.info(f"[AUTH DEBUG] PROJECT_ROOT detected as: {PROJECT_ROOT}")
 
 class SettingsPage:
     def __init__(self):
@@ -21,14 +28,14 @@ class SettingsPage:
         self.tg_chat_id = ""
         self.tg_api_id = ""
         self.tg_api_hash = ""
-
+        
         # Состояние авторизации Telegram
         self.auth_client = None
         self.auth_phone = ""
         self.auth_hash = ""
         self.auth_dialog = None
         self.auth_step_container = None
-
+        
         # Настройки алертов
         self.alert_price_hours_pump_period = None
         self.alert_price_hours_dump_period = None
@@ -355,6 +362,10 @@ class SettingsPage:
         if not phone:
             ui.notify("Введите номер телефона", type='warning')
             return
+        
+        # Очистка номера от пробелов и скобок
+        phone = phone.replace(" ", "").replace("(", "").replace(")", "").replace("-", "")
+        logger.info(f"[AUTH DEBUG] Phone: {phone}")
 
         try:
             from pyrogram import Client
@@ -368,23 +379,41 @@ class SettingsPage:
         if self.auth_client and self.auth_client.is_connected:
             await self.auth_client.disconnect()
 
+        # Удаляем старый файл сессии, чтобы начать с чистого листа
+        # Используем PROJECT_ROOT для правильного пути
+        session_file = os.path.join(PROJECT_ROOT, "beholder_telegram.session")
+        logger.info(f"[AUTH DEBUG] Session file path: {session_file}")
+        
+        if os.path.exists(session_file):
+            try:
+                os.remove(session_file)
+                logger.info(f"Удален старый файл сессии: {session_file}")
+            except Exception as e:
+                logger.warning(f"Не удалось удалить старый файл сессии: {e}")
+
+        logger.info(f"[AUTH DEBUG] Workdir: {PROJECT_ROOT}")
         self.auth_client = Client(
             "beholder_telegram",
             api_id=int(self.tg_api_id),
             api_hash=self.tg_api_hash,
-            workdir="."
+            workdir=PROJECT_ROOT # Явно указываем рабочую директорию
         )
+        logger.info("[AUTH DEBUG] Client created.")
 
         try:
             await self.auth_client.connect()
+            logger.info("[AUTH DEBUG] Connected.")
+            
             sent_code = await self.auth_client.send_code(phone)
+            logger.info("[AUTH DEBUG] Code sent.")
+            
             self.auth_phone = phone
             self.auth_hash = sent_code.phone_code_hash
-            ui.notify("Код отправлен!", type='positive')
+            ui.notify("Код отправлен! Проверьте приложение Telegram (не SMS).", type='positive')
             self.render_auth_step_2()
 
         except Exception as e:
-            logger.error(f"Auth Error: {e}")
+            logger.error(f"[AUTH DEBUG] Auth Error: {e}")
             ui.notify(f"Ошибка: {e}", type='negative')
             if self.auth_client.is_connected:
                 await self.auth_client.disconnect()
@@ -394,6 +423,7 @@ class SettingsPage:
         self.auth_step_container.clear()
         with self.auth_step_container:
             ui.label(f'Код отправлен на {self.auth_phone}').classes('text-sm text-gray-600')
+            ui.label('Проверьте сервисные уведомления в приложении Telegram!').classes('text-xs text-blue-600 font-bold')
             code_input = ui.input('Код из Telegram').classes('w-full').props('autofocus')
 
             with ui.row().classes('w-full justify-end mt-2'):
@@ -481,7 +511,7 @@ class SettingsPage:
                 ui.input('API ID', placeholder='12345678').classes('w-40').bind_value(self, 'tg_api_id')
                 ui.input('API Hash', password=True, password_toggle_button=True, placeholder='0123456789abcdef...').classes('flex-grow').bind_value(self, 'tg_api_hash')
                 ui.button('Сохранить', on_click=self.save_settings).classes('h-10')
-
+                
                 # Кнопка запуска мастера авторизации
                 ui.button('Войти в Telegram', on_click=self.open_auth_dialog, color='blue').tooltip('Создать сессию для чтения каналов')
 
