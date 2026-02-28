@@ -181,6 +181,8 @@ class MarketDataService:
                 # Делегируем анализ AlertEngine
                 await self.alert_engine.analyze_pair(session, pair, config, rates)
 
+            logger.info("Анализ price/volume завершен.")
+
     async def _get_quote_rates(self, pairs: List[MonitoredPair]) -> Dict[str, float]:
         """
         Получает текущие курсы Quote -> USDT для всех активных пар через CCXT.
