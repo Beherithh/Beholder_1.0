@@ -24,16 +24,6 @@ class SignalsPage:
             result = await session.execute(statement)
             self.signals = result.all()
 
-    async def delete_signal(self, signal_id: int):
-        """Удаление сигнала из базы данных"""
-        async with get_session() as session:
-            signal = await session.get(Signal, signal_id)
-            if signal:
-                await session.delete(signal)
-                await session.commit()
-                ui.notify(f'Сигнал #{signal_id} удален', type='positive')
-        await self.refresh_table()
-
     async def resolve_risk_event(self, signal_id: int):
         """
         Полное разрешение события риска для КОНКРЕТНОЙ МОНЕТЫ, связанной с сигналом.
@@ -187,10 +177,6 @@ class SignalsPage:
             apply_filters()
             ui.notify('Сигналы обновлены', type='info')
             
-        async def handle_delete_signal(signal_id):
-            await self.delete_signal(signal_id)
-            apply_filters()
-
         async def handle_resolve_event(signal_id):
             await self.resolve_risk_event(signal_id)
 
@@ -244,17 +230,9 @@ class SignalsPage:
                            @click="$parent.$emit('resolve_event', props.row.id)">
                         <q-tooltip>Разрешить событие риска</q-tooltip>
                     </q-btn>
-
-                    <q-btn flat round dense 
-                           icon="delete" 
-                           color="red" 
-                           @click="$parent.$emit('delete_signal', props.row.id)">
-                        <q-tooltip>Удалить сигнал</q-tooltip>
-                    </q-btn>
                 </q-td>
             ''')
             
-            self.table.on('delete_signal', lambda msg: handle_delete_signal(msg.args))
             self.table.on('resolve_event', lambda msg: handle_resolve_event(msg.args))
 
 @ui.page('/signals')
