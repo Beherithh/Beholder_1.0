@@ -101,7 +101,7 @@ class AlertEngine:
                                             f"Min: {p_min} | Max: {p_max}"
 
             if is_triggered:
-                await self._create_signal_if_new(session, SignalType.PRICE_CHANGE, alert_msg, pair.id, unique_filter=period_str)
+                await self._create_or_update_signal(session, SignalType.PRICE_CHANGE, alert_msg, pair.id, unique_filter=period_str)
             else:
                 # Если условие перестало выполняться для ЭТОГО конкретного периода и направления - удаляем
                 await session.execute(delete(Signal).where(
@@ -153,18 +153,20 @@ class AlertEngine:
             return
 
         total_v_usdt = total_v_raw * rate
+        
+        period_str = f"in {v_period} days"
 
         if total_v_usdt <= v_threshold * v_period:
             v_msg = f"📊 Low Volume <b>{pair.symbol}</b>\n" \
                     f"({pair.exchange}): {pair.source_label}\n" \
-                    f"Volume in {v_period} days: {total_v_usdt:,.0f} USDT\n" \
+                    f"Volume {period_str}: {total_v_usdt:,.0f} USDT\n" \
                     f"<b>{total_v_usdt/v_period:,.0f}</b> USDT/day\n"    
             
             if rate != 1.0:
                 v_msg += f" (quote {quote}: {rate})"
             
             v_msg += f"\nThreshold: {v_threshold:,.0f} USDT"
-            await self._create_signal_if_new(session, SignalType.VOLUME_ALERT, v_msg, pair.id)
+            await self._create_or_update_signal(session, SignalType.VOLUME_ALERT, v_msg, pair.id, unique_filter=period_str)
         else:
             # Объем в норме -> удаляем старые алерты по объему
             await session.execute(delete(Signal).where(
@@ -172,9 +174,22 @@ class AlertEngine:
                 Signal.type == SignalType.VOLUME_ALERT
             ))
             await session.commit()
+            
+        # Очистка "осиротевших" алертов объема (если изменился период в конфиге)
+        # Удаляем все VOLUME_ALERT для этой пары, которые НЕ содержат текущий period_str
+        cleanup_v_stmt = delete(Signal).where(
+            Signal.pair_id == pair.id,
+            Signal.type == SignalType.VOLUME_ALERT,
+            Signal.raw_message.notlike(f"%{period_str}%")
+        )
+        await session.execute(cleanup_v_stmt)
+        await session.commit()
 
-    async def _create_signal_if_new(self, session: AsyncSession, sig_type: SignalType, msg: str, pair_id: int | None = None, unique_filter: str | None = None):
-        """Создает сигнал в БД и отправляет в ТГ, если такого сообщения еще нет в активном пуле"""
+    async def _create_or_update_signal(self, session: AsyncSession, sig_type: SignalType, msg: str, pair_id: int | None = None, unique_filter: str | None = None):
+        """
+        Создает сигнал в БД и отправляет в ТГ, если такого сообщения еще нет.
+        Если сигнал уже есть, обновляет его текст (raw_message) для актуализации данных в Dashboard.
+        """
         if pair_id is None:
             logger.error(f"Attempted to create signal with pair_id=None! Msg: {msg}")
             return
@@ -195,12 +210,17 @@ class AlertEngine:
             # Уточняем поиск по периоду (чтобы 30d не блокировался 6h)
             if unique_filter:
                 conditions.append(Signal.raw_message.like(f"%{unique_filter}%"))
-        # Для других типов (например VOLUME_ALERT) достаточно совпадения типа и pair_id
+        
+        # Для VOLUME_ALERT тоже добавляем фильтр по периоду, чтобы различать "in 30 days" и "in 45 days"
+        elif sig_type == SignalType.VOLUME_ALERT:
+             if unique_filter:
+                conditions.append(Signal.raw_message.like(f"%{unique_filter}%"))
 
         stmt = select(Signal).where(*conditions)
         existing = (await session.execute(stmt)).first()
         
         if not existing:
+            # Сигнала нет -> Создаем новый и отправляем уведомление
             try:
                 new_sig = Signal(type=sig_type, pair_id=pair_id, raw_message=msg)
                 session.add(new_sig)
@@ -216,5 +236,17 @@ class AlertEngine:
                 logger.error(f"Failed to save signal to DB: {e}")
                 await session.rollback()
         else:
-            # Логируем, что сигнал уже существует, чтобы было понятно, почему не создается новый
-            logger.info(f"Signal already exists (ID: {existing[0].id}), skipping creation. Msg: {msg[:50]}...")
+            # Сигнал уже есть -> Проверяем, изменился ли текст (данные)
+            sig = existing[0]
+            if sig.raw_message != msg:
+                # Данные изменились (например, просадка увеличилась) -> Обновляем текст в БД
+                # Но НЕ отправляем уведомление повторно (is_sent не трогаем)
+                sig.raw_message = msg
+                # Обновляем created_at, чтобы сигнал поднялся в списке (опционально, но полезно для сортировки)
+                # sig.created_at = datetime.now(timezone.utc) 
+                session.add(sig)
+                await session.commit()
+                # logger.info(f"Updated signal {sig.id} with new data: {msg[:50]}...")
+            else:
+                # Данные идентичны -> Ничего не делаем
+                pass
