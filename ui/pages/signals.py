@@ -24,18 +24,6 @@ class SignalsPage:
             result = await session.execute(statement)
             self.signals = result.all()
 
-    async def toggle_mute_signal(self, signal_id: int):
-        """Переключение состояния is_silent у сигнала"""
-        async with get_session() as session:
-            signal = await session.get(Signal, signal_id)
-            if signal:
-                signal.is_silent = not signal.is_silent
-                session.add(signal)
-                await session.commit()
-                status = "заглушен" if signal.is_silent else "восстановлен"
-                ui.notify(f'Сигнал #{signal_id} {status}', type='info')
-        await self.refresh_table()
-
     async def delete_signal(self, signal_id: int):
         """Удаление сигнала из базы данных"""
         async with get_session() as session:
@@ -147,7 +135,6 @@ class SignalsPage:
                 'type': s.type.value,
                 'message': s.raw_message,
                 'sent': s.is_sent,
-                'is_silent': s.is_silent,
                 'type_raw': s.type
             })
             
@@ -167,7 +154,6 @@ class SignalsPage:
                 'type': s.type.value,
                 'message': s.raw_message,
                 'sent': s.is_sent,
-                'is_silent': s.is_silent,
                 'type_raw': s.type
             })
 
@@ -201,10 +187,6 @@ class SignalsPage:
             apply_filters()
             ui.notify('Сигналы обновлены', type='info')
             
-        async def handle_toggle_mute(signal_id):
-            await self.toggle_mute_signal(signal_id)
-            apply_filters()
-
         async def handle_delete_signal(signal_id):
             await self.delete_signal(signal_id)
             apply_filters()
@@ -264,13 +246,6 @@ class SignalsPage:
                     </q-btn>
 
                     <q-btn flat round dense 
-                           :icon="props.row.is_silent ? 'volume_off' : 'volume_up'" 
-                           :color="props.row.is_silent ? 'grey' : 'blue'" 
-                           @click="$parent.$emit('toggle_mute', props.row.id)">
-                        <q-tooltip>{{ props.row.is_silent ? 'Включить звук' : 'Заглушить' }}</q-tooltip>
-                    </q-btn>
-
-                    <q-btn flat round dense 
                            icon="delete" 
                            color="red" 
                            @click="$parent.$emit('delete_signal', props.row.id)">
@@ -279,7 +254,6 @@ class SignalsPage:
                 </q-td>
             ''')
             
-            self.table.on('toggle_mute', lambda msg: handle_toggle_mute(msg.args))
             self.table.on('delete_signal', lambda msg: handle_delete_signal(msg.args))
             self.table.on('resolve_event', lambda msg: handle_resolve_event(msg.args))
 

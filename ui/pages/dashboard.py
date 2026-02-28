@@ -39,16 +39,12 @@ async def get_dashboard_data() -> Dict[str, Any]:
         # Группируем сигналы по pair_id
         price_alerts_map = {}
         volume_alerts_map = {}
-        muted_risk_alerts_map = set()
         
         for sig in recent_signals:
             if sig.type == SignalType.PRICE_CHANGE:
                 if sig.pair_id: price_alerts_map[sig.pair_id] = sig.raw_message
             elif sig.type == SignalType.VOLUME_ALERT:
                 if sig.pair_id: volume_alerts_map[sig.pair_id] = sig.raw_message
-            elif sig.type in [SignalType.ST_WARNING, SignalType.DELISTING_WARNING]:
-                if sig.pair_id and getattr(sig, "is_silent", False):
-                    muted_risk_alerts_map.add(sig.pair_id)
 
         for pair in pairs:
             # Статистика
@@ -95,7 +91,6 @@ async def get_dashboard_data() -> Dict[str, Any]:
             # Алерты
             price_alert_msg = price_alerts_map.get(pair.id)
             volume_alert_msg = volume_alerts_map.get(pair.id)
-            is_risk_muted = pair.id in muted_risk_alerts_map
 
             # Rank Logic
             rank_val = pair.cmc_rank
@@ -124,8 +119,7 @@ async def get_dashboard_data() -> Dict[str, Any]:
                 "updated": updated_at,
                 "tv_url": f"https://www.tradingview.com/chart/?symbol={pair.exchange.upper()}:{pair.symbol.replace('/', '')}",
                 "price_alert_msg": price_alert_msg,
-                "volume_alert_msg": volume_alert_msg,
-                "is_risk_muted": is_risk_muted
+                "volume_alert_msg": volume_alert_msg
             })
         
         return {"rows": data_rows, "stats": stats}
@@ -268,9 +262,6 @@ async def dashboard_page():
                     <template v-if="props.row.announcement_url">
                         <a :href="props.row.announcement_url" target="_blank" class="no-underline">
                             <q-badge :class="props.row.risk_color" outline class="cursor-pointer hover:bg-gray-100">
-                                <q-icon v-if="props.row.is_risk_muted" name="volume_off" size="xs" color="grey" class="q-mr-xs">
-                                    <q-tooltip>Алерт заглушен (пользователем)</q-tooltip>
-                                </q-icon>
                                 {{ props.value }}
                                 <q-icon name="open_in_new" size="xs" class="q-ml-xs" />
                             </q-badge>
@@ -278,9 +269,6 @@ async def dashboard_page():
                     </template>
                     <template v-else>
                         <q-badge :class="props.row.risk_color" outline>
-                            <q-icon v-if="props.row.is_risk_muted" name="volume_off" size="xs" color="grey" class="q-mr-xs">
-                                <q-tooltip>Алерт заглушен (пользователем)</q-tooltip>
-                            </q-icon>
                             {{ props.value }}
                         </q-badge>
                     </template>

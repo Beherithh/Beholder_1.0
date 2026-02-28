@@ -123,5 +123,3 @@ class Signal(SQLModel, table=True):
     raw_message: str 
     
     is_sent: bool = Field(default=False) 
-    
-    is_silent: bool = Field(default=False)
