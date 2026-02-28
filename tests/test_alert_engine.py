@@ -21,14 +21,15 @@ class TestCreateSignalIfNew:
     """Дедупликация: не создаёт сигнал, если аналогичный уже отправлен недавно."""
 
     @pytest.mark.asyncio
-    async def test_creates_new_signal(self, session_factory, db_session, setup_defaults):
+    async def test_creates_new_signal(self, session_factory, db_session, setup_defaults, create_pair):
         """В пустой БД — сигнал создаётся."""
         await setup_defaults()
+        pair = await create_pair(symbol="BTC/USDT", exchange="BINANCE")
         service = AlertEngine(session_factory)
 
         with patch("services.notifications.send_and_log_signal", new_callable=AsyncMock):
-            await service._create_signal_if_new(
-                db_session, SignalType.PRICE_CHANGE, "📈 PUMP BTC/USDT +50%"
+            await service._create_or_update_signal(
+                db_session, SignalType.PRICE_CHANGE, "📈 PUMP BTC/USDT +50%", pair_id=pair.id
             )
 
         result = await db_session.execute(select(Signal))
@@ -37,12 +38,14 @@ class TestCreateSignalIfNew:
         assert signals[0].raw_message == "📈 PUMP BTC/USDT +50%"
 
     @pytest.mark.asyncio
-    async def test_skips_duplicate_if_exists_active(self, session_factory, db_session, setup_defaults):
+    async def test_skips_duplicate_if_exists_active(self, session_factory, db_session, setup_defaults, create_pair):
         """Не создаёт дубликат, если активный сигнал уже есть в БД."""
         await setup_defaults()
+        pair = await create_pair(symbol="BTC/USDT", exchange="BINANCE")
 
         existing = Signal(
             type=SignalType.PRICE_CHANGE,
+            pair_id=pair.id,
             raw_message="📈 PUMP BTC/USDT +50%",
             is_sent=True
         )
@@ -52,8 +55,8 @@ class TestCreateSignalIfNew:
         service = AlertEngine(session_factory)
 
         with patch("services.notifications.send_and_log_signal", new_callable=AsyncMock):
-            await service._create_signal_if_new(
-                db_session, SignalType.PRICE_CHANGE, "📈 PUMP BTC/USDT +50%"
+            await service._create_or_update_signal(
+                db_session, SignalType.PRICE_CHANGE, "📈 PUMP BTC/USDT +50%", pair_id=pair.id
             )
 
         result = await db_session.execute(select(Signal))

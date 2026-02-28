@@ -55,3 +55,6 @@ database.db-shm
 database.db-wal
 /nssm.exe
 /secret.key
+diagnose_telegram.py
+data_flow.png
+

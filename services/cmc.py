@@ -50,12 +50,7 @@ class CMCService:
             currency_map: Dict[str, List[MonitoredPair]] = {}
             
             for pair in pairs:
-                symbol = pair.symbol.upper()
-                base = symbol
-                if '/' in symbol:
-                    base = symbol.split('/')[0]
-                elif '_' in symbol:
-                    base = symbol.split('_')[0]
+                base = pair.base_currency
                 
                 if base not in currency_map:
                     currency_map[base] = []
@@ -143,16 +138,7 @@ class CMCService:
         if existing:
             return
 
-        # Распаковка названий списков из JSON
-        lists_str = pair.source_label or "Unknown"
-        try:
-            loaded = json.loads(lists_str)
-            if isinstance(loaded, list):
-                lists_str = ", ".join(loaded)
-            elif isinstance(loaded, str):
-                lists_str = loaded
-        except:
-            pass
+        lists_str = pair.labels_display
 
         msg_text = f"⚠️ <b>Low Rank Warning</b>\n\n" \
                    f"Coin: <b>{pair.symbol}</b>\n" \

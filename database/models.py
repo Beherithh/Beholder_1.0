@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from typing import Optional
 from enum import Enum
@@ -71,6 +72,38 @@ class MonitoredPair(SQLModel, table=True):
 
     # Связи
     market_data: list["MarketData"] = Relationship(back_populates="pair")
+
+    # === Вычисляемые свойства (не сохраняются в БД) ===
+
+    @property
+    def base_currency(self) -> str:
+        """Извлекает базовую валюту из символа.
+
+        'BTC/USDT' -> 'BTC', 'BTC_USDT' -> 'BTC', 'DOGE' -> 'DOGE'
+        """
+        if '/' in self.symbol:
+            return self.symbol.split('/')[0].upper()
+        if '_' in self.symbol:
+            return self.symbol.split('_')[0].upper()
+        return self.symbol.upper()
+
+    @property
+    def labels_display(self) -> str:
+        """Распаковывает JSON-метки source_label в строку для отображения.
+
+        '["Gate 1", "Mexc 2"]' -> 'Gate 1, Mexc 2'
+        'Some Label'           -> 'Some Label'
+        None                   -> 'Unknown'
+        """
+        if not self.source_label:
+            return "Unknown"
+        try:
+            loaded = json.loads(self.source_label)
+            if isinstance(loaded, list):
+                return ", ".join(loaded)
+            return str(loaded)
+        except (json.JSONDecodeError, TypeError):
+            return self.source_label
 
 class DelistingEvent(SQLModel, table=True):
     """

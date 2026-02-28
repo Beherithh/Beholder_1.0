@@ -98,7 +98,7 @@ class ScraperService:
             return
 
         # 2. Собираем их базовые валюты и все связанные с ними события
-        base_symbols = list({p.symbol.split('/')[0] for p in risky_pairs})
+        base_symbols = list({p.base_currency for p in risky_pairs})
         events_stmt = select(DelistingEvent).where(DelistingEvent.symbol.in_(base_symbols))
         all_events = (await session.execute(events_stmt)).scalars().all()
         
@@ -108,7 +108,7 @@ class ScraperService:
         demoted_count = 0
         # 3. Ищем "сирот"
         for pair in risky_pairs:
-            base_currency = pair.symbol.split('/')[0]
+            base_currency = pair.base_currency
             if base_currency not in symbols_with_events:
                 logger.warning(f"Сброс риска для {pair.symbol}: нет активных событий Delisting/ST. "
                                f"Текущий риск: {pair.risk_level.name}")
@@ -144,7 +144,7 @@ class ScraperService:
             return
 
         # Собираем все базовые валюты для запроса
-        bases = list({p.symbol.split('/')[0] for p in active_pairs})
+        bases = list({p.base_currency for p in active_pairs})
         
         # Строим карту {base_currency: [events]}
         events_map = {}
@@ -163,7 +163,7 @@ class ScraperService:
         pairs_updated = 0
         
         for pair in active_pairs:
-            base_currency = pair.symbol.split('/')[0]
+            base_currency = pair.base_currency
             events = events_map.get(base_currency, [])
             
             for evidence in events:

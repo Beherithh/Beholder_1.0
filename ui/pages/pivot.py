@@ -21,8 +21,8 @@ async def get_pivot_data() -> List[Dict[str, Any]]:
         aggregated: Dict[str, Dict[str, Any]] = {}
 
         for pair in pairs:
-            # Извлекаем название монеты (до слеша, например BTC из BTC/USDT)
-            coin_name = pair.symbol.split('/')[0] if '/' in pair.symbol else pair.symbol
+            # Извлекаем название монеты через property модели
+            coin_name = pair.base_currency
             
             if coin_name not in aggregated:
                 aggregated[coin_name] = {
@@ -31,7 +31,8 @@ async def get_pivot_data() -> List[Dict[str, Any]]:
                     "labels": set()
                 }
             
-            # Обработка меток (распаковка JSON списка или чтение строки)
+            # Обработка меток — используем property модели для базовой распаковки,
+            # но для агрегации нам нужен список, поэтому парсим отдельно
             if pair.source_label:
                 try:
                     labels = json.loads(pair.source_label)

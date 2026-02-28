@@ -1,4 +1,3 @@
-import json
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any
 
@@ -57,12 +56,8 @@ async def get_dashboard_data() -> Dict[str, Any]:
             price_stmt = select(MarketData).where(MarketData.pair_id == pair.id).order_by(MarketData.timestamp.desc()).limit(1)
             last_price = (await session.execute(price_stmt)).scalar_one_or_none()
             
-            # Распаковка labels
-            try:
-                labels = json.loads(pair.source_label) if pair.source_label else []
-                labels_str = ", ".join(labels) if isinstance(labels, list) else str(pair.source_label)
-            except:
-                labels_str = pair.source_label or ""
+            # Распаковка labels — используем property модели
+            labels_str = pair.labels_display
 
             price_val = last_price.close if last_price else 0.0
             updated_at = last_price.timestamp.strftime("%d.%m %H:%M") if last_price else "—"
@@ -70,7 +65,7 @@ async def get_dashboard_data() -> Dict[str, Any]:
             # Поиск ссылки на статью для рисковых статусов
             announcement_url = None
             if pair.risk_level != RiskLevel.NORMAL:
-                base_currency = pair.symbol.split('/')[0]
+                base_currency = pair.base_currency
                 event_stmt = select(DelistingEvent).where(
                     DelistingEvent.symbol == base_currency
                 ).order_by(DelistingEvent.found_at.desc()).limit(1)
@@ -115,7 +110,7 @@ async def get_dashboard_data() -> Dict[str, Any]:
                 "risk_color": risk_color,
                 "announcement_url": announcement_url,
                 "labels": labels_str,
-                "labels_count": len(labels) if isinstance(labels, list) else 1,
+                "labels_count": len(labels_str.split(", ")) if labels_str != "Unknown" else 0,
                 "updated": updated_at,
                 "tv_url": f"https://www.tradingview.com/chart/?symbol={pair.exchange.upper()}:{pair.symbol.replace('/', '')}",
                 "price_alert_msg": price_alert_msg,

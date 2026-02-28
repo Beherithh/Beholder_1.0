@@ -37,7 +37,7 @@ class SignalsPage:
                 return
             
             source_signal, source_pair = result
-            base_currency = source_pair.symbol.split('/')[0]
+            base_currency = source_pair.base_currency
 
             # 2. Извлечь URL из сообщения
             url_match = re.search(r'https?://[^\s]+', source_signal.raw_message)

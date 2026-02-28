@@ -129,7 +129,7 @@ class ApiRiskCheckerService:
             for pair in db_pairs:
                 current_ex = pair.exchange.upper()
                 pair_symbol = pair.symbol.upper()
-                base_currency = pair_symbol.split('/')[0]
+                base_currency = pair.base_currency
                 
                 # --- A. Populating DelistingEvent from API (ST status) ---
                 for ex_name, ex_data in all_api_data.items():
