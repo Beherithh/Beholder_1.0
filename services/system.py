@@ -30,8 +30,8 @@ async def init_services():
     # 1. Alert Engine
     alert_engine = AlertEngine(get_session)
 
-    # 2. Market Data Service
-    market_service = MarketDataService(get_session)
+    # 2. Market Data Service (получает AlertEngine через DI)
+    market_service = MarketDataService(get_session, alert_engine)
     
     # 3. Scraper Service
     scraper_service = ScraperService(get_session)

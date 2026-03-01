@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database.models import (
     MonitoredPair, DelistingEvent, DelistingEventType, RiskLevel, Signal, SignalType
 )
+from utils.symbol_normalizer import normalize_symbol
 
 class ApiRiskCheckerService:
     """
@@ -59,7 +60,6 @@ class ApiRiskCheckerService:
             
             # 2. Собираем данные со всех API в единую структуру
             all_api_data = {}
-            quote_currencies = {"USDT", "BTC", "ETH", "BUSD", "BNB", "SOL", "USDC"}
 
             async with httpx.AsyncClient(timeout=30.0) as client:
                 for source in self.API_SOURCES:
@@ -98,22 +98,10 @@ class ApiRiskCheckerService:
                                 continue
                             
                             # Нормализуем к формату БД: BTC/USDT
-                            if "_" in raw_symbol:
-                                normalized = raw_symbol.replace("_", "/")
-                            elif "-" in raw_symbol:
-                                normalized = raw_symbol.replace("-", "/")
-                            elif "/" in raw_symbol:
-                                normalized = raw_symbol
-                            else:
-                                normalized = raw_symbol
-                                for quote in quote_currencies:
-                                    if raw_symbol.endswith(quote) and len(raw_symbol) > len(quote):
-                                        base = raw_symbol[:-len(quote)]
-                                        normalized = f"{base}/{quote}"
-                                        break
+                            normalized = normalize_symbol(raw_symbol)
                             
                             # Группируем данные по базовой валюте
-                            base_currency = normalized.split('/')[0].upper()
+                            base_currency = normalized.split('/')[0].upper() if '/' in normalized else normalized.upper()
                             if base_currency not in all_api_data[ex_name]:
                                 all_api_data[ex_name][base_currency] = []
                             

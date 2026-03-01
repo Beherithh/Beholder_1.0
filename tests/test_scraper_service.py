@@ -41,17 +41,26 @@ class TestScraperService:
     async def test_check_all_risks_calls_subsystems(self, scraper_service):
         """Проверка, что check_all_risks вызывает все подсистемы"""
         
-        # Мокаем _demote_orphaned_risks, чтобы он не лез в БД и не вызывал ошибку
+        # Мокаем _demote_orphaned_risks, чтобы он не лез в БД
         scraper_service._demote_orphaned_risks = AsyncMock()
 
-        # Патчим FileWatcherService, так как он импортируется внутри метода
-        with patch('services.file_watcher.FileWatcherService') as MockFileWatcher:
-            mock_watcher = MockFileWatcher.return_value
+        # Мок для get_session (используется внутри check_all_risks для demote и match)
+        mock_session = AsyncMock()
+        mock_session_ctx = AsyncMock()
+        mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        # Патчим get_file_watcher_service (синглтон) и get_session
+        with patch('services.scraper.get_session', return_value=mock_session_ctx), \
+             patch('services.system.get_file_watcher_service') as mock_get_fw:
+            
+            mock_watcher = AsyncMock()
             mock_watcher.sync_from_settings = AsyncMock(return_value="Synced")
+            mock_get_fw.return_value = mock_watcher
             
             await scraper_service.check_all_risks()
             
-            # Проверяем вызовы
+            # Проверяем вызовы подсистем
             scraper_service.telegram_monitor.check_binance_telegram_channel.assert_called_once()
             scraper_service.blog_scraper.check_delistings_blog.assert_called_once()
             scraper_service.api_risk_checker.check_api_risks.assert_called_once()
@@ -59,11 +68,8 @@ class TestScraperService:
             # Проверяем, что _demote_orphaned_risks вызвался
             scraper_service._demote_orphaned_risks.assert_called_once()
 
-            # Проверяем, что матчинг вызвался (хотя бы раз, так как мы замокали возвраты 0)
-            # В текущей логике матчинг вызывается, если есть события.
-            # Но в check_all_risks есть вызов match_monitored_pairs_with_events в блоке try/except
-            # сразу после синхронизации файлов.
-            assert scraper_service.match_monitored_pairs_with_events.call_count >= 1
+            # Проверяем, что матчинг вызвался один раз (в конце)
+            scraper_service.match_monitored_pairs_with_events.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_update_pair_risk_logic(self, scraper_service, mock_session_factory):

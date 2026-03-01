@@ -13,9 +13,9 @@ class MarketDataService:
     Сервис для загрузки рыночных данных (свечей) через CCXT.
     """
     
-    def __init__(self, session_factory):
+    def __init__(self, session_factory, alert_engine: AlertEngine):
         self.session_factory = session_factory
-        self.alert_engine = AlertEngine(session_factory)
+        self.alert_engine = alert_engine
     
     async def _get_last_candle_time(self, session: AsyncSession, pair_id: int) -> datetime:
         """

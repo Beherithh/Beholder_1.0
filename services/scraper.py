@@ -216,54 +216,50 @@ class ScraperService:
 
     async def check_all_risks(self):
         """
-        Вызывает все проверки риска: блог и API.
+        Вызывает все проверки риска: Telegram, блоги и API.
         Перед проверкой автоматически синхронизирует список пар из файлов.
         """
         logger.info("=== Запуск полной проверки рисков Delistings + ST ===")
         
         try:
-            # 0. Синхронизация и очистка
+            # 0. Синхронизация — используем существующий синглтон
             logger.info("Синхронизация списка пар из файлов...")
-            from services.file_watcher import FileWatcherService
-            watcher = FileWatcherService(get_session)
-            stats = await watcher.sync_from_settings()
+            from services.system import get_file_watcher_service
+            stats = await get_file_watcher_service().sync_from_settings()
             logger.info(f"Синхронизация завершена: {stats}")
             
             async with get_session() as session:
                 # Сначала сбрасываем риски, для которых больше нет событий
                 await self._demote_orphaned_risks(session)
-                # Затем матчим существующие пары с существующими событиями
-                matches = await self.match_monitored_pairs_with_events(session)
-                logger.info(f"Найдено совпадений с историей: {matches}")
 
         except Exception as e:
             logger.error(f"Ошибка на этапе синхронизации и очистки: {e}")
         
         # 1. Telegram
         try:
-            tg_events = await self.telegram_monitor.check_binance_telegram_channel()
-            if tg_events > 0:
-                async with get_session() as session:
-                    await self.match_monitored_pairs_with_events(session)
+            await self.telegram_monitor.check_binance_telegram_channel()
         except Exception as e:
             logger.error(f"Ошибка при проверке Telegram: {e}")
 
         # 2. Web Scraping (Blogs)
         try:
-            blog_events = await self.blog_scraper.check_delistings_blog()
-            if blog_events > 0:
-                async with get_session() as session:
-                    await self.match_monitored_pairs_with_events(session)
+            await self.blog_scraper.check_delistings_blog()
         except Exception as e:
             logger.error(f"Ошибка при проверке блогов: {e}")
         
         # 3. API Checks
         try:
-            api_changes = await self.api_risk_checker.check_api_risks()
-            if api_changes:
-                 async with get_session() as session:
-                    await self.match_monitored_pairs_with_events(session)
+            await self.api_risk_checker.check_api_risks()
         except Exception as e:
             logger.error(f"Ошибка при проверке API: {e}")
+
+        # 4. Единый матчинг — один раз после всех проверок
+        try:
+            async with get_session() as session:
+                matches = await self.match_monitored_pairs_with_events(session)
+                if matches > 0:
+                    logger.info(f"Матчинг: обновлено {matches} пар")
+        except Exception as e:
+            logger.error(f"Ошибка при матчинге пар с событиями: {e}")
 
         logger.info("=== Полная проверка рисков Delistings + ST завершена ===")

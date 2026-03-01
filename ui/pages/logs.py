@@ -111,41 +111,62 @@ class FilteredLogViewer:
             self.counts[level] = 0
             self._update_counter(level)
 
+def _format_log_message(message) -> str:
+    """Извлекает текст из объекта сообщения Loguru.
+
+    Loguru может передавать как строку, так и объект с атрибутом `record`.
+    Эта функция унифицирует формат для всех UI-обработчиков.
+    """
+    try:
+        if hasattr(message, 'record'):
+            r = message.record
+            return f"[{r['time'].strftime('%H:%M:%S')}] {r['level'].name}: {r['message']}"
+    except Exception:
+        pass
+    return str(message)
+
+
+def _broadcast_to_viewers(viewers: list, text: str) -> list:
+    """Рассылает текст всем активным UI-элементам и возвращает список живых.
+
+    Автоматически убирает элементы, чьи клиенты отключились.
+    """
+    keep = []
+    for el in viewers:
+        try:
+            if el.client.has_socket_connection:
+                el.push(text)
+                keep.append(el)
+        except Exception:
+            pass
+    return keep
+
+
 def broadcast_log(message):
     """
     Функция-обработчик для Loguru. Рассылает логи всем активным клиентам.
     """
     global active_log_elements
     
-    # Форматируем сообщение
-    text = message
+    text = _format_log_message(message)
+
+    # Определяем уровень — INFO/DEBUG идут на страницу логов
     is_info_or_debug = True
     try:
         if hasattr(message, 'record'):
-            r = message.record
-            text = f"[{r['time'].strftime('%H:%M:%S')}] {r['level'].name}: {r['message']}"
-            if r['level'].name in ("WARNING", "ERROR", "CRITICAL"):
+            if message.record['level'].name in ("WARNING", "ERROR", "CRITICAL"):
                 is_info_or_debug = False
-    except:
+    except Exception:
         pass
         
-    # Сохраняем в буфер
+    # Сохраняем в буфер (все уровни — для истории)
     LOG_BUFFER.append(text)
     if len(LOG_BUFFER) > MAX_LOG_LINES:
         LOG_BUFFER.pop(0)
         
-    # Рассылаем по активным UI элементам (только если это не Warning/Error)
+    # Рассылаем по активным UI элементам (только INFO/DEBUG)
     if is_info_or_debug:
-        keep_list = []
-        for el in active_log_elements:
-            try:
-                # Проверка живой ли элемент (клиент мог отключиться)
-                if el.client.has_socket_connection:
-                    el.push(text)
-                    keep_list.append(el)
-            except:
-                pass
-        active_log_elements = keep_list
+        active_log_elements = _broadcast_to_viewers(active_log_elements, text)
 
 @ui.page('/logs')
 def logs_page():

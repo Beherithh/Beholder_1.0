@@ -8,6 +8,7 @@ from sqlmodel import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import MonitoredPair, MonitoringStatus, RiskLevel, Signal
+from utils.symbol_normalizer import normalize_symbol
 
 class FileWatcherService:
     """
@@ -72,7 +73,7 @@ class FileWatcherService:
             else:
                 logger.warning(f"Не удалось извлечь данные из имени: {filename}. Defaults.")
                 exchange_name = "UNKNOWN"
-                quote_currency = ""
+                quote_currency = None
 
             # 2. Парсинг содержимого
             try:
@@ -89,37 +90,14 @@ class FileWatcherService:
                 for pair_item in items:
                     raw_symbol = pair_item.get("symbol", "")
                     if raw_symbol:
-                        # Нормализация символа
-                        normalized_symbol = raw_symbol.upper()
+                        # Нормализация: BTC_USDT -> BTC/USDT, BTCUSDT -> BTC/USDT
+                        # quote_currency из имени файла используется как fallback
+                        normalized_symbol = normalize_symbol(raw_symbol, fallback_quote=quote_currency)
                         
-                        # 1. Если есть разделитель "_" или "-" или "." -> меняем на "/"
-                        if any(sep in normalized_symbol for sep in ("_", "-", ".")):
-                            normalized_symbol = re.sub(r'[_\-\.]', '/', normalized_symbol)
-
-                        # 2. Если разделителя нет (AXSUSDT), ищем известную котируемую валюту (Quote)
-                        elif "/" not in normalized_symbol:
-                            # Сначала пробуем ту, что была в имени файла (приоритет)
-                            quotes_to_check = [quote_currency] if quote_currency else []
-                            # Затем все остальные стандартные
-                            standard_quotes = ["USDT", "BTC", "ETH", "USDC", "BNB", "fdusd", "tusd", "busd"]
-                            for q in standard_quotes:
-                                q_up = q.upper()
-                                if q_up not in quotes_to_check:
-                                    quotes_to_check.append(q_up)
-
-                            for q in quotes_to_check:
-                                if normalized_symbol.endswith(q) and len(normalized_symbol) > len(q):
-                                    base = normalized_symbol[:-len(q)]
-                                    normalized_symbol = f"{base}/{q}"
-                                    break
-                            else:
-                                # Котировка не найдена внутри символа (например, просто "DOGE").
-                                # Если имя файла дало нам quote_currency — используем его напрямую.
-                                if quote_currency:
-                                    normalized_symbol = f"{normalized_symbol}/{quote_currency}"
-                                    logger.debug(f"Символ '{raw_symbol}' не содержит котировку — применён fallback из файла: {normalized_symbol}")
-                                else:
-                                    logger.warning(f"Символ '{raw_symbol}' пропущен: не удалось определить котировку.")
+                        # Если котировку не удалось определить — символ не содержит '/'
+                        if '/' not in normalized_symbol and not quote_currency:
+                            logger.warning(f"Символ '{raw_symbol}' пропущен: не удалось определить котировку.")
+                            continue
 
                         found_pairs.add((exchange_name, normalized_symbol, path_str, label))
                     

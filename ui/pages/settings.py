@@ -8,8 +8,7 @@ import subprocess
 
 from database.core import get_session
 from database.models import AppSettings
-from services.file_watcher import FileWatcherService
-from services.system import get_scraper_service, get_config_service, get_scheduler
+from services.system import get_scraper_service, get_config_service, get_scheduler, get_file_watcher_service
 from services.security import SecurityService
 from ui.layout import create_header
 
@@ -172,8 +171,7 @@ class SettingsPage:
         
         # Автоматическая синхронизация сразу после добавления
         try:
-            watcher = FileWatcherService(get_session)
-            stats = await watcher.sync_from_settings()
+            stats = await get_file_watcher_service().sync_from_settings()
             
             # Быстрый матч с рисками
             async with get_session() as session:
@@ -201,8 +199,7 @@ class SettingsPage:
             
             # Автоматическая синхронизация сразу после удаления
             try:
-                watcher = FileWatcherService(get_session)
-                stats = await watcher.sync_from_settings()
+                stats = await get_file_watcher_service().sync_from_settings()
                 
                 # Проверяем наличие ошибок (отсутствующие файлы)
                 missing = stats.get("missing_files", [])
@@ -317,103 +314,108 @@ class SettingsPage:
             ui.notify('Ошибка теста Telegram. Проверьте Token и Chat ID.', type='negative')
 
     async def render(self):
+        """Главный метод отрисовки страницы настроек.
+        
+        Делегирует отрисовку каждой секции отдельному подметоду
+        для лучшей читаемости и поддержки (SRP).
+        """
         await self.load_settings()
         
-        # Получаем планировщик (он уже инициализирован в main)
+        with ui.card().classes('w-full max-w-3xl mx-auto p-4'):
+            self._render_files_section()
+            self._render_telegram_section()
+            self._render_cmc_section()
+            self._render_scheduler_section()
+            self._render_alerts_section()
+
+    # ==========================================================
+    # Подметоды рендеринга секций
+    # ==========================================================
+
+    def _render_files_section(self):
+        """Секция: список файлов торгуемых пар."""
+        ui.label('Списки торгуемых пар').classes('text-xl font-bold mb-4')
+        
+        with ui.row().classes('w-full items-center gap-2'):
+            path_input = ui.input('Путь к файлу').classes('flex-grow').props('outlined dense')
+            ui.button(icon='folder', on_click=lambda: self.pick_file(path_input)).props('flat dense').tooltip('Выбрать файл на диске')
+            ui.button('Добавить', on_click=lambda: self.add_file(path_input))
+        
+        ui.separator().classes('my-4')
+        self.files_container = ui.column().classes('w-full gap-2')
+        self.refresh_ui()
+
+    def _render_telegram_section(self):
+        """Секция: настройки Telegram Bot + Telegram API."""
+        # --- Bot ---
+        ui.separator().classes('my-4')
+        ui.label('Уведомления Telegram').classes('text-xl font-bold mb-2')
+        with ui.row().classes('w-full items-center gap-4'):
+            ui.input('Bot Token', password=True, password_toggle_button=True).classes('flex-grow').bind_value(self, 'tg_token')
+            ui.input('Chat ID').classes('w-32').bind_value(self, 'tg_chat_id')
+            ui.button('Тест', on_click=self.test_telegram).props('outline').classes('h-10')
+            ui.button('Сохранить', on_click=self.save_settings).classes('h-10')
+        ui.label('Создайте бота через @BotFather и получите свой ID через @userinfobot').classes('text-xs text-gray-400')
+        
+        # --- API (Pyrogram) ---
+        ui.separator().classes('my-2')
+        ui.label('Telegram API (для чтения каналов)').classes('text-lg font-bold mb-2')
+        with ui.row().classes('w-full items-center gap-4'):
+            ui.input('API ID', placeholder='12345678').classes('w-40').bind_value(self, 'tg_api_id')
+            ui.input('API Hash', password=True, password_toggle_button=True, placeholder='0123456789abcdef...').classes('flex-grow').bind_value(self, 'tg_api_hash')
+            ui.button('Сохранить', on_click=self.save_settings).classes('h-10')
+            
+        with ui.column().classes('w-full gap-1 p-3 bg-yellow-50 rounded border-l-4 border-yellow-400 mt-2'):
+            ui.label('⚠️ Как подключить чтение каналов:').classes('text-sm font-bold text-yellow-800')
+            ui.markdown('''
+1. Получите **API ID** и **API Hash** на [my.telegram.org](https://my.telegram.org).
+2. Введите их в поля выше и нажмите **Сохранить**.
+3. Запустите сreate_session.bat
+4. Следуйте инструкциям в консоли (введите телефон и код).
+5. После создания файла `beholder_telegram.session` перезапустите приложение.
+            ''').classes('text-xs text-gray-700')
+
+    def _render_cmc_section(self):
+        """Секция: настройки CoinMarketCap API."""
+        ui.separator().classes('my-4')
+        with ui.row().classes('items-center gap-2'):
+            ui.label('CoinMarketCap API (порог хлама по умолчаню = 500)').classes('text-xl font-bold')
+        with ui.row().classes('w-full items-center gap-4'):
+            ui.input('API Key', password=True, password_toggle_button=True).classes('flex-grow').bind_value(self, 'cmc_api_key')
+            ui.number('Порог рейтинга хлама', min=1).classes('w-32').bind_value(self, 'cmc_rank_threshold').props('dense')
+            ui.button('Сохранить', on_click=self.save_settings).classes('h-10')
+
+    def _render_scheduler_section(self):
+        """Секция: расписание и интервалы обновления."""
         from services.system import get_scheduler
         scheduler = get_scheduler()
         
-        with ui.card().classes('w-full max-w-3xl mx-auto p-4'):
-            ui.label('Списки торгуемых пар').classes('text-xl font-bold mb-4')
-            
-            # Input Area
-            with ui.row().classes('w-full items-center gap-2'):
-                path_input = ui.input('Путь к файлу').classes('flex-grow').props('outlined dense')
-                # Кнопка выбора файла (native dialog)
-                ui.button(icon='folder', on_click=lambda: self.pick_file(path_input)).props('flat dense').tooltip('Выбрать файл на диске')
-                ui.button('Добавить', on_click=lambda: self.add_file(path_input))
-            
-            # List Area
-            ui.separator().classes('my-4')
-            self.files_container = ui.column().classes('w-full gap-2')
-            self.refresh_ui()
-            
-            # --- Telegram Settings ---
-            ui.separator().classes('my-4')
-            ui.label('Уведомления Telegram').classes('text-xl font-bold mb-2')
-            with ui.row().classes('w-full items-center gap-4'):
-                ui.input('Bot Token', password=True, password_toggle_button=True).classes('flex-grow').bind_value(self, 'tg_token')
-                ui.input('Chat ID').classes('w-32').bind_value(self, 'tg_chat_id')
-                ui.button('Тест', on_click=self.test_telegram).props('outline').classes('h-10')
-                ui.button('Сохранить', on_click=self.save_settings).classes('h-10')
-            ui.label('Создайте бота через @BotFather и получите свой ID через @userinfobot').classes('text-xs text-gray-400')
-            
-            # --- Telegram API (Pyrogram) ---
-            ui.separator().classes('my-2')
-            ui.label('Telegram API (для чтения каналов)').classes('text-lg font-bold mb-2')
-            with ui.row().classes('w-full items-center gap-4'):
-                ui.input('API ID', placeholder='12345678').classes('w-40').bind_value(self, 'tg_api_id')
-                ui.input('API Hash', password=True, password_toggle_button=True, placeholder='0123456789abcdef...').classes('flex-grow').bind_value(self, 'tg_api_hash')
-                ui.button('Сохранить', on_click=self.save_settings).classes('h-10')
-                
-            # Инструкция по созданию сессии
-            with ui.column().classes('w-full gap-1 p-3 bg-yellow-50 rounded border-l-4 border-yellow-400 mt-2'):
-                ui.label('⚠️ Как подключить чтение каналов:').classes('text-sm font-bold text-yellow-800')
-                ui.markdown('''
-1. Получите **API ID** и **API Hash** на [my.telegram.org](https://my.telegram.org).
-2. Введите их в поля выше и нажмите **Сохранить**.
-3. Откройте терминал в папке проекта и запустите:
-   `python create_session.py`
-4. Следуйте инструкциям в консоли (введите телефон и код).
-5. После создания файла `beholder_telegram.session` перезапустите приложение.
-                ''').classes('text-xs text-gray-700')
+        ui.separator().classes('my-4')
+        ui.label('Расписание').classes('text-lg font-bold')
+        
+        async def on_interval_change(setting_attr: str, new_value: int, reschedule_func):
+            setattr(self, setting_attr, new_value)
+            await self.save_settings()
+            await reschedule_func(new_value)
+            ui.notify(f'Интервал {setting_attr} обновлен: {new_value}', type='positive')
 
-            # --- CoinMarketCap Settings ---
-            ui.separator().classes('my-4')
-            with ui.row().classes('items-center gap-2'):
-                ui.label('CoinMarketCap API (порог хлама по умолчаню = 500)').classes('text-xl font-bold')
-            with ui.row().classes('w-full items-center gap-4'):
-                ui.input('API Key', password=True, password_toggle_button=True).classes('flex-grow').bind_value(self, 'cmc_api_key')
-                ui.number('Порог рейтинга хлама', min=1).classes('w-32').bind_value(self, 'cmc_rank_threshold').props('dense')
-                ui.button('Сохранить', on_click=self.save_settings).classes('h-10')
-
-            # --- Scheduler Settings ---
-            ui.separator().classes('my-4')
-            ui.label('Расписание').classes('text-lg font-bold')
+        with ui.grid(columns=3):
+            hours_options = {h: f'{h} ч.' for h in range(1, 25)}
             
-            async def on_interval_change(setting_attr: str, new_value: int, reschedule_func):
-                # Обновляем внутреннее состояние
-                setattr(self, setting_attr, new_value)
-                # Сохраняем все настройки (включая эту)
-                await self.save_settings()
-                # Перепланируем конкретную задачу
-                await reschedule_func(new_value)
-                ui.notify(f'Интервал {setting_attr} обновлен: {new_value}', type='positive')
+            ui.label('Обновление OHLCv').classes('text-md font-medium mt-2')
+            ui.label('Проверка делистингов (Scraper)').classes('text-md font-medium mt-2')
+            ui.label('Обновление рангов CMC').classes('text-md font-medium mt-2')
+            
+            days_options = {d: f'{d} дн.' for d in range(1, 31)}
 
-            with ui.grid(columns=3):
-                # Генератор опций для селекта: {1: '1 час', 2: '2 часа', ...}
-                # Можно сделать красивее с окончаниями, но для простоты: "X ч."
-                hours_options = {h: f'{h} ч.' for h in range(1, 25)}
-                # --- OHLCV Interval ---
-                ui.label('Обновление OHLCv').classes('text-md font-medium mt-2')
-                
-                # --- Scraper Interval ---
-                ui.label('Проверка делистингов (Scraper)').classes('text-md font-medium mt-2')
-                
-                # --- CMC Interval ---
-                ui.label('Обновление рангов CMC').classes('text-md font-medium mt-2')
-                
-                # Опции для дней: 1...30
-                days_options = {d: f'{d} дн.' for d in range(1, 31)}
-
-                ui.select(options=hours_options, value=self.market_interval, on_change=lambda e: on_interval_change('market_interval', e.value, scheduler.update_market_interval)).classes('w-32').bind_value(self, 'market_interval')
-                ui.select(options=hours_options, value=self.scraper_interval, on_change=lambda e: on_interval_change('scraper_interval', e.value, scheduler.update_scraper_interval)).classes('w-32').bind_value(self, 'scraper_interval')
-                ui.select(options=days_options, value=self.cmc_interval, on_change=lambda e: on_interval_change('cmc_interval', e.value, scheduler.update_cmc_interval)).classes('w-32').bind_value(self, 'cmc_interval')
+            ui.select(options=hours_options, value=self.market_interval, on_change=lambda e: on_interval_change('market_interval', e.value, scheduler.update_market_interval)).classes('w-32').bind_value(self, 'market_interval')
+            ui.select(options=hours_options, value=self.scraper_interval, on_change=lambda e: on_interval_change('scraper_interval', e.value, scheduler.update_scraper_interval)).classes('w-32').bind_value(self, 'scraper_interval')
+            ui.select(options=days_options, value=self.cmc_interval, on_change=lambda e: on_interval_change('cmc_interval', e.value, scheduler.update_cmc_interval)).classes('w-32').bind_value(self, 'cmc_interval')
 
             # Пояснение логики работы всех служб
-            with ui.column().classes('w-full gap-2 p-3 bg-blue-50 rounded border-l-4 border-blue-400 mt-2'):
-                ui.label('ℹ️ Как работают службы мониторинга:').classes('text-sm font-bold text-blue-700')
-                ui.markdown('''
+        with ui.column().classes('w-full gap-2 p-3 bg-blue-50 rounded border-l-4 border-blue-400 mt-2'):
+            ui.label('ℹ️ Как работают службы мониторинга:').classes('text-sm font-bold text-blue-700')
+            ui.markdown('''
 **Расписание запуска:**
 - **OHLCV (свечи)** — каждый час в **:05** (10:05, 11:05, 12:05...)
 - **Scraper (делистинги и ST)** — каждый час в **:15** (10:15, 11:15, 12:15...)
@@ -431,52 +433,53 @@ class SettingsPage:
 4. **API Check:** проверка ST-тегов через API бирж
 5. Отправка уведомлений о новых рисках
 
-**Интервалы > 1 часа (примеры):**
+**Интервалы \u003e 1 часа (примеры):**
 - **6 часов** → OHLCV: 00:05, 06:05, 12:05, 18:05 | Scraper: 00:15, 06:15, 12:15, 18:15
 - **14 часов** → Scraper: 00:15, 14:15 (2 раза в сутки)
 - **24 часа** → OHLCV: 00:05 (раз в сутки)
 
 *⚠️ Это фиксированное время (модуль часа), а не "каждые X часов от старта".*
-                ''').classes('text-xs text-gray-700')
+            ''').classes('text-xs text-gray-700')
 
-            # --- Analysis Alerts Settings ---
-            ui.separator().classes('my-4')
-            ui.label('Настройки алертов (Цена и Объем)').classes('text-xl font-bold mb-2')
+    def _render_alerts_section(self):
+        """Секция: пороги алертов цены и объёма."""
+        ui.separator().classes('my-4')
+        ui.label('Настройки алертов (Цена и Объем)').classes('text-xl font-bold mb-2')
+        
+        with ui.column().classes('w-full gap-4'):
+            # Pump Alerts
+            ui.label('📈 PUMP (рост цены)').classes('text-lg font-bold text-green-600')
+            with ui.row().classes('items-center gap-4 ml-4'):
+                ui.label('Часы:').classes('w-32')
+                ui.number('Период (ч)', min=1, max=168).classes('w-24').bind_value(self, 'alert_price_hours_pump_period').props('dense')
+                ui.number('Порог %', min=0.1).classes('w-24').bind_value(self, 'alert_price_hours_pump_threshold').props('dense suffix=%')
             
-            with ui.column().classes('w-full gap-4'):
-                # Pump Alerts
-                ui.label('📈 PUMP (рост цены)').classes('text-lg font-bold text-green-600')
-                with ui.row().classes('items-center gap-4 ml-4'):
-                    ui.label('Часы:').classes('w-32')
-                    ui.number('Период (ч)', min=1, max=168).classes('w-24').bind_value(self, 'alert_price_hours_pump_period').props('dense')
-                    ui.number('Порог %', min=0.1).classes('w-24').bind_value(self, 'alert_price_hours_pump_threshold').props('dense suffix=%')
-                
-                with ui.row().classes('items-center gap-4 ml-4'):
-                    ui.label('Дни:').classes('w-32')
-                    ui.number('Период (дн)', min=1, max=30).classes('w-24').bind_value(self, 'alert_price_days_pump_period').props('dense')
-                    ui.number('Порог %', min=0.1).classes('w-24').bind_value(self, 'alert_price_days_pump_threshold').props('dense suffix=%')
-                
-                # Dump Alerts
-                ui.label('📉 DUMP (падение цены)').classes('text-lg font-bold text-red-600')
-                with ui.row().classes('items-center gap-4 ml-4'):
-                    ui.label('Часы:').classes('w-32')
-                    ui.number('Период (ч)', min=1, max=168).classes('w-24').bind_value(self, 'alert_price_hours_dump_period').props('dense')
-                    ui.number('Порог %', min=0.1).classes('w-24').bind_value(self, 'alert_price_hours_dump_threshold').props('dense suffix=%')
-                
-                with ui.row().classes('items-center gap-4 ml-4'):
-                    ui.label('Дни:').classes('w-32')
-                    ui.number('Период (дн)', min=1, max=30).classes('w-24').bind_value(self, 'alert_price_days_dump_period').props('dense')
-                    ui.number('Порог %', min=0.1).classes('w-24').bind_value(self, 'alert_price_days_dump_threshold').props('dense suffix=%')
+            with ui.row().classes('items-center gap-4 ml-4'):
+                ui.label('Дни:').classes('w-32')
+                ui.number('Период (дн)', min=1, max=30).classes('w-24').bind_value(self, 'alert_price_days_pump_period').props('dense')
+                ui.number('Порог %', min=0.1).classes('w-24').bind_value(self, 'alert_price_days_pump_threshold').props('dense suffix=%')
             
-                # Volume Days
-                ui.label('Volume').classes('text-lg font-bold text-blue-600')
-                with ui.row().classes('items-center gap-4'):
-                    ui.label('Объем торгов (дни):').classes('w-48')
-                    ui.number('Дни', min=1, max=30).classes('w-24').bind_value(self, 'alert_volume_days_period').props('dense')
-                    ui.number('Порог USDT в день', min=0).classes('w-40').bind_value(self, 'alert_volume_days_threshold').props('dense suffix=USDT')
-                
-                ui.button('Сохранить настройки алертов', on_click=self.save_settings, color='positive').classes('w-fit self-end')
-                ui.label('Если поля пустые - алерт считается выключенным. Пороги указываются как положительные числа.').classes('text-xs text-gray-400')
+            # Dump Alerts
+            ui.label('📉 DUMP (падение цены)').classes('text-lg font-bold text-red-600')
+            with ui.row().classes('items-center gap-4 ml-4'):
+                ui.label('Часы:').classes('w-32')
+                ui.number('Период (ч)', min=1, max=168).classes('w-24').bind_value(self, 'alert_price_hours_dump_period').props('dense')
+                ui.number('Порог %', min=0.1).classes('w-24').bind_value(self, 'alert_price_hours_dump_threshold').props('dense suffix=%')
+            
+            with ui.row().classes('items-center gap-4 ml-4'):
+                ui.label('Дни:').classes('w-32')
+                ui.number('Период (дн)', min=1, max=30).classes('w-24').bind_value(self, 'alert_price_days_dump_period').props('dense')
+                ui.number('Порог %', min=0.1).classes('w-24').bind_value(self, 'alert_price_days_dump_threshold').props('dense suffix=%')
+        
+            # Volume Days
+            ui.label('Volume').classes('text-lg font-bold text-blue-600')
+            with ui.row().classes('items-center gap-4'):
+                ui.label('Объем торгов (дни):').classes('w-48')
+                ui.number('Дни', min=1, max=30).classes('w-24').bind_value(self, 'alert_volume_days_period').props('dense')
+                ui.number('Порог USDT в день', min=0).classes('w-40').bind_value(self, 'alert_volume_days_threshold').props('dense suffix=USDT')
+            
+            ui.button('Сохранить настройки алертов', on_click=self.save_settings, color='positive').classes('w-fit self-end')
+            ui.label('Если поля пустые - алерт считается выключенным. Пороги указываются как положительные числа.').classes('text-xs text-gray-400')
 
 
 @ui.page('/settings')

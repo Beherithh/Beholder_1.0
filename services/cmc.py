@@ -129,7 +129,7 @@ class CMCService:
         """
         Проверяет и отправляет алерт о низком ранге.
         """
-        # Поиск активного сигнала
+        # Поиск активного сигнала — не дублируем, если уже есть
         stmt = select(Signal).where(
             Signal.type == SignalType.RANK_WARNING,
             Signal.pair_id == pair.id
@@ -145,7 +145,7 @@ class CMCService:
                    f"Current Rank: <b>#{rank}</b>\n" \
                    f"Lists: {lists_str}"
         
-        # Создаем сигнал
+        # Создаём сигнал в БД
         signal = Signal(
             type=SignalType.RANK_WARNING,
             pair_id=pair.id,
@@ -154,17 +154,10 @@ class CMCService:
             created_at=datetime.now(timezone.utc)
         )
         session.add(signal)
-        await session.flush() # чтобы получить ID
+        await session.commit()
+        await session.refresh(signal)
 
-        # Отправляем
-        from services.system import get_telegram_service
-        tg = get_telegram_service()
-        if tg:
-            try:
-                sent = await tg.send_message(msg_text)
-                if sent:
-                    # Отмечаем сигнал как отправленный
-                    signal.is_sent = True
-                    session.add(signal)
-            except Exception as e:
-                logger.error(f"Failed to send CMC alert: {e}")
+        # Отправляем через единый механизм уведомлений
+        from services.notifications import send_and_log_signal
+        asyncio.create_task(send_and_log_signal(signal.id, msg_text, prefix=""))
+        logger.warning(f"NEW CMC SIGNAL: {msg_text}")

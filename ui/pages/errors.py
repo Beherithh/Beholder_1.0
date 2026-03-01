@@ -1,6 +1,6 @@
 from nicegui import ui
 from ui.layout import create_header
-from ui.pages.logs import LOG_BUFFER, FilteredLogViewer
+from ui.pages.logs import LOG_BUFFER, FilteredLogViewer, _format_log_message, _broadcast_to_viewers
 
 # Глобальные переменные для страницы ошибок
 error_log_elements = []
@@ -10,25 +10,8 @@ def broadcast_error_log(message):
     Функция-обработчик для рассылки только ERROR и CRITICAL логов.
     """
     global error_log_elements
-    
-    text = message
-    try:
-        if hasattr(message, 'record'):
-            r = message.record
-            text = f"[{r['time'].strftime('%H:%M:%S')}] {r['level'].name}: {r['message']}"
-    except:
-        pass
-    
-    # Рассылаем по активным UI элементам
-    keep_list = []
-    for el in error_log_elements:
-        try:
-            if el.client.has_socket_connection:
-                el.push(text)
-                keep_list.append(el)
-        except:
-            pass
-    error_log_elements = keep_list
+    text = _format_log_message(message)
+    error_log_elements = _broadcast_to_viewers(error_log_elements, text)
 
 @ui.page('/errors')
 def errors_page():
