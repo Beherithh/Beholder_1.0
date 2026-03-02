@@ -41,8 +41,8 @@ class TestScraperService:
     async def test_check_all_risks_calls_subsystems(self, scraper_service):
         """Проверка, что check_all_risks вызывает все подсистемы"""
         
-        # Мокаем _demote_orphaned_risks, чтобы он не лез в БД
-        scraper_service._demote_orphaned_risks = AsyncMock()
+        # Мокаем demote_orphaned_risks, чтобы он не лез в БД
+        scraper_service.demote_orphaned_risks = AsyncMock()
 
         # Мок для get_session (используется внутри check_all_risks для demote и match)
         mock_session = AsyncMock()
@@ -50,13 +50,12 @@ class TestScraperService:
         mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
 
-        # Патчим get_file_watcher_service (синглтон) и get_session
+        # Патчим services.file_watcher (синглтон) и get_session
+        mock_watcher = AsyncMock()
+        mock_watcher.sync_from_settings = AsyncMock(return_value="Synced")
+
         with patch('services.scraper.get_session', return_value=mock_session_ctx), \
-             patch('services.system.get_file_watcher_service') as mock_get_fw:
-            
-            mock_watcher = AsyncMock()
-            mock_watcher.sync_from_settings = AsyncMock(return_value="Synced")
-            mock_get_fw.return_value = mock_watcher
+             patch('services.system.services.file_watcher', mock_watcher):
             
             await scraper_service.check_all_risks()
             
@@ -65,8 +64,8 @@ class TestScraperService:
             scraper_service.blog_scraper.check_delistings_blog.assert_called_once()
             scraper_service.api_risk_checker.check_api_risks.assert_called_once()
             
-            # Проверяем, что _demote_orphaned_risks вызвался
-            scraper_service._demote_orphaned_risks.assert_called_once()
+            # Проверяем, что demote_orphaned_risks вызвался
+            scraper_service.demote_orphaned_risks.assert_called_once()
 
             # Проверяем, что матчинг вызвался один раз (в конце)
             scraper_service.match_monitored_pairs_with_events.assert_called_once()

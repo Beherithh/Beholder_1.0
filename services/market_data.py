@@ -166,8 +166,8 @@ class MarketDataService:
         """
         logger.info("Запуск анализа рыночных данных на алерты...")
         
-        from services.system import get_config_service
-        config = await get_config_service().get_alert_config()
+        from services.system import services
+        config = await services.config.get_alert_config()
 
         async with self.session_factory() as session:
             # 2. Получаем все активные пары

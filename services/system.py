@@ -1,4 +1,17 @@
-from loguru import logger # Перемещено в начало файла
+"""
+Центральный реестр сервисов приложения.
+
+Вместо 8 глобальных переменных и 8 одинаковых геттеров
+используется единый типизированный контейнер ServiceContainer.
+
+Использование:
+    from services.system import services
+    services.telegram.send_message(...)
+    services.config.get_alert_config()
+"""
+from __future__ import annotations
+
+from loguru import logger
 
 from database.core import get_session
 from services.market_data import MarketDataService
@@ -8,88 +21,70 @@ from services.telegram import TelegramService
 from services.config import ConfigService
 from services.alert_engine import AlertEngine
 
-# Глобальные переменные для синглтонов
-market_service: MarketDataService = None
-scraper_service: ScraperService = None
-scheduler_service: SchedulerService = None
-telegram_service: TelegramService = None
-file_watcher_service: "FileWatcherService" = None
-config_service: ConfigService = None
-alert_engine: AlertEngine = None
-cmc_service: "CMCService" = None
 
-async def init_services():
+class ServiceContainer:
+    """Центральный реестр сервисов (Singleton).
+
+    Все сервисы доступны как типизированные атрибуты:
+        services.config, services.telegram, services.scheduler и т.д.
+
+    Атрибуты заполняются в init_services() при старте приложения.
     """
-    Инициализирует сервисы. Должна вызываться один раз при старте приложения.
-    """
-    global market_service, scraper_service, scheduler_service, telegram_service, file_watcher_service, config_service, alert_engine, cmc_service
-    
-    # 0. Config Service (Фундамент)
-    config_service = ConfigService(get_session)
+
+    _instance: ServiceContainer | None = None
+
+    def __init__(self) -> None:
+        # Каждый атрибут — None до вызова init_services()
+        self.config: ConfigService | None = None
+        self.alert_engine: AlertEngine | None = None
+        self.market: MarketDataService | None = None
+        self.scraper: ScraperService | None = None
+        self.scheduler: SchedulerService | None = None
+        self.telegram: TelegramService | None = None
+        self.file_watcher: "FileWatcherService | None" = None
+        self.cmc: "CMCService | None" = None
+
+    @classmethod
+    def instance(cls) -> ServiceContainer:
+        """Возвращает единственный экземпляр контейнера (lazy singleton)."""
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+
+# Модульная переменная — единая точка доступа ко всем сервисам
+services = ServiceContainer.instance()
+
+
+async def init_services() -> None:
+    """Инициализирует все сервисы. Вызывается один раз при старте приложения."""
+
+    # 0. Config Service (фундамент — от него зависят остальные)
+    services.config = ConfigService(get_session)
 
     # 1. Alert Engine
-    alert_engine = AlertEngine(get_session)
+    services.alert_engine = AlertEngine(get_session)
 
     # 2. Market Data Service (получает AlertEngine через DI)
-    market_service = MarketDataService(get_session, alert_engine)
-    
+    services.market = MarketDataService(get_session, services.alert_engine)
+
     # 3. Scraper Service
-    scraper_service = ScraperService(get_session)
-    
+    services.scraper = ScraperService(get_session)
+
     # 4. CMC Service
     from services.cmc import CMCService
-    cmc_service = CMCService(get_session)
+    services.cmc = CMCService(get_session)
 
-    # 5. Scheduler Service (нужен market_service, scraper_service и cmc_service)
-    scheduler_service = SchedulerService(market_service, scraper_service, cmc_service)
+    # 5. Scheduler Service (нужен market, scraper и cmc)
+    services.scheduler = SchedulerService(services.market, services.scraper, services.cmc)
 
     # 6. File Watcher Service
     from services.file_watcher import FileWatcherService
-    file_watcher_service = FileWatcherService(get_session)
+    services.file_watcher = FileWatcherService(get_session)
 
-    # 7. Telegram Service + Загрузка настроек через ConfigService
-    tg_conf = await config_service.get_telegram_config()
-    telegram_service = TelegramService(token=tg_conf.bot_token, chat_id=tg_conf.chat_id)
-    
+    # 7. Telegram Service + загрузка настроек из БД
+    tg_conf = await services.config.get_telegram_config()
+    services.telegram = TelegramService(token=tg_conf.bot_token, chat_id=tg_conf.chat_id)
+
     if tg_conf.bot_token and tg_conf.chat_id:
         logger.info("Telegram Service инициализирован настройками из БД.")
-
-def get_scheduler() -> SchedulerService:
-    if not scheduler_service:
-        raise RuntimeError("Services not initialized! Call init_services() first.")
-    return scheduler_service
-
-def get_cmc_service():
-    if not cmc_service:
-        raise RuntimeError("Services not initialized! Call init_services() first.")
-    return cmc_service
-
-def get_market_service() -> MarketDataService:
-    if not market_service:
-        raise RuntimeError("Services not initialized! Call init_services() first.")
-    return market_service
-
-def get_scraper_service() -> ScraperService:
-    if not scraper_service:
-        raise RuntimeError("Services not initialized! Call init_services() first.")
-    return scraper_service
-
-def get_telegram_service() -> TelegramService:
-    if not telegram_service:
-        raise RuntimeError("Services not initialized! Call init_services() first.")
-    return telegram_service
-
-def get_file_watcher_service() -> "FileWatcherService":
-    if not file_watcher_service:
-        raise RuntimeError("Services not initialized! Call init_services() first.")
-    return file_watcher_service
-
-def get_config_service() -> ConfigService:
-    if not config_service:
-        raise RuntimeError("Services not initialized! Call init_services() first.")
-    return config_service
-
-def get_alert_engine() -> AlertEngine:
-    if not alert_engine:
-        raise RuntimeError("Services not initialized! Call init_services() first.")
-    return alert_engine

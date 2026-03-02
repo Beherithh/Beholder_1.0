@@ -8,7 +8,7 @@ import subprocess
 
 from database.core import get_session
 from database.models import AppSettings
-from services.system import get_scraper_service, get_config_service, get_scheduler, get_file_watcher_service
+from services.system import services
 from services.security import SecurityService
 from ui.layout import create_header
 
@@ -48,7 +48,7 @@ class SettingsPage:
         
     async def load_settings(self):
         """Загружаем все настройки через ConfigService"""
-        config = get_config_service()
+        config = services.config
         
         # Файлы
         self.files_list = await config.get_watched_files()
@@ -137,8 +137,7 @@ class SettingsPage:
             await session.commit()
             
         # Обновляем сервис Telegram
-        from services.system import get_telegram_service
-        get_telegram_service().update_config(self.tg_token, self.tg_chat_id)
+        services.telegram.update_config(self.tg_token, self.tg_chat_id)
         ui.notify("Настройки сохранены", type="positive")
             
     async def add_file(self, path_input):
@@ -171,12 +170,11 @@ class SettingsPage:
         
         # Автоматическая синхронизация сразу после добавления
         try:
-            stats = await get_file_watcher_service().sync_from_settings()
+            stats = await services.file_watcher.sync_from_settings()
             
             # Быстрый матч с рисками
             async with get_session() as session:
-                scraper = get_scraper_service()
-                matches = await scraper.match_monitored_pairs_with_events(session)
+                matches = await services.scraper.match_monitored_pairs_with_events(session)
             
             # Проверяем наличие ошибок (отсутствующие файлы)
             missing = stats.get("missing_files", [])
@@ -199,7 +197,7 @@ class SettingsPage:
             
             # Автоматическая синхронизация сразу после удаления
             try:
-                stats = await get_file_watcher_service().sync_from_settings()
+                stats = await services.file_watcher.sync_from_settings()
                 
                 # Проверяем наличие ошибок (отсутствующие файлы)
                 missing = stats.get("missing_files", [])
@@ -301,8 +299,7 @@ class SettingsPage:
 
     async def test_telegram(self):
         """Проверка связи с ТГ"""
-        from services.system import get_telegram_service
-        tg = get_telegram_service()
+        tg = services.telegram
         tg.update_config(self.tg_token, self.tg_chat_id)
         
         ui.notify('Отправка тестового сообщения...', type='info')
@@ -387,8 +384,7 @@ class SettingsPage:
 
     def _render_scheduler_section(self):
         """Секция: расписание и интервалы обновления."""
-        from services.system import get_scheduler
-        scheduler = get_scheduler()
+        scheduler = services.scheduler
         
         ui.separator().classes('my-4')
         ui.label('Расписание').classes('text-lg font-bold')

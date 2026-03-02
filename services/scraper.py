@@ -82,7 +82,7 @@ class ScraperService:
 
         return changed
 
-    async def _demote_orphaned_risks(self, session: AsyncSession):
+    async def demote_orphaned_risks(self, session: AsyncSession):
         """
         Проверяет пары с повышенным риском и сбрасывает его, если нет активных событий.
         Это исправляет ситуацию, когда DelistingEvent удаляется вручную из БД.
@@ -224,13 +224,13 @@ class ScraperService:
         try:
             # 0. Синхронизация — используем существующий синглтон
             logger.info("Синхронизация списка пар из файлов...")
-            from services.system import get_file_watcher_service
-            stats = await get_file_watcher_service().sync_from_settings()
+            from services.system import services
+            stats = await services.file_watcher.sync_from_settings()
             logger.info(f"Синхронизация завершена: {stats}")
             
             async with get_session() as session:
                 # Сначала сбрасываем риски, для которых больше нет событий
-                await self._demote_orphaned_risks(session)
+                await self.demote_orphaned_risks(session)
 
         except Exception as e:
             logger.error(f"Ошибка на этапе синхронизации и очистки: {e}")

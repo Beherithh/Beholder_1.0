@@ -33,8 +33,8 @@ class SchedulerService:
         """
         Запускает все периодические задачи на основе настроек из ConfigService.
         """
-        from services.system import get_config_service
-        config = await get_config_service().get_scheduler_config()
+        from services.system import services
+        config = await services.config.get_scheduler_config()
 
         await self.schedule_market_update(config.market_update_interval_hours)
         await self.schedule_scraper_check(config.scraper_interval_hours)

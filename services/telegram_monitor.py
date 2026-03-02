@@ -28,8 +28,8 @@ class TelegramMonitorService:
             return 0
         
         # 2. Проверка конфигурации
-        from services.system import get_config_service
-        tg_conf = await get_config_service().get_telegram_config()
+        from services.system import services
+        tg_conf = await services.config.get_telegram_config()
         
         if not tg_conf.api_id or not tg_conf.api_hash:
             logger.warning("Telegram API credentials не настроены. Пропуск проверки @binance_announcements")

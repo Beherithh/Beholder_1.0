@@ -6,7 +6,7 @@ from utils.logging_setup import init_logging
 init_logging()
 
 from database.core import init_db
-from services.system import init_services, get_scheduler, get_file_watcher_service
+from services.system import init_services, services
 from ui.pages.dashboard import dashboard_page
 from ui.pages.signals import signals_page
 from ui.pages.pivot import pivot_page
@@ -24,8 +24,7 @@ async def startup():
     await init_services()
 
     logger.info("Syncing monitored pairs...")
-    watcher = get_file_watcher_service()
-    await watcher.sync_from_settings()
+    await services.file_watcher.sync_from_settings()
     
     # Добавляем оповещения (Toasts) для Warning/Error
     def ui_notification_sink(message):
@@ -40,9 +39,8 @@ async def startup():
     logger.add(ui_notification_sink, level="WARNING")
     
     # Запуск планировщика
-    scheduler = get_scheduler()
-    scheduler.start()
-    await scheduler.schedule_all()
+    services.scheduler.start()
+    await services.scheduler.schedule_all()
     
     logger.info("Система Beholder запущена.")
 

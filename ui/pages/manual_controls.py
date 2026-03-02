@@ -3,8 +3,7 @@ from sqlmodel import select, delete
 
 from database.core import get_session
 from database.models import MonitoredPair, MarketData, DelistingEvent, Signal
-from services.file_watcher import FileWatcherService
-from services.system import get_scraper_service, get_scheduler
+from services.system import services
 from ui.layout import create_header
 
 
@@ -24,13 +23,11 @@ class ManualControlsPage:
         matches = 0
         stats = {}
         try:
-            watcher = FileWatcherService(get_session)
-            stats = await watcher.sync_from_settings()
+            stats = await services.file_watcher.sync_from_settings()
             
             # Запускаем БЫСТРЫЙ матч с историей рисков сразу после синхронизации
             async with get_session() as session:
-                scraper = get_scraper_service()
-                matches = await scraper.match_monitored_pairs_with_events(session)
+                matches = await services.scraper.match_monitored_pairs_with_events(session)
                 
             try:
                 # Проверяем наличие ошибок (отсутствующие файлы)
@@ -53,13 +50,13 @@ class ManualControlsPage:
             except:
                 pass
 
-    async def run_ohlcv_update(self, scheduler, button):
+    async def run_ohlcv_update(self, button):
         """Ручной запуск обновления цен"""
         self.is_updating_ohlcv = True
         button.props('loading')
         ui.notify('Обновление цен запущено...', type='info')
         try:
-            await scheduler.market_service.update_all()
+            await services.market.update_all()
             try:
                 ui.notify('Цены обновлены!', type='positive')
             except:
@@ -71,13 +68,13 @@ class ManualControlsPage:
             except:
                 pass
 
-    async def run_scraper_check(self, scheduler, button):
+    async def run_scraper_check(self, button):
         """Ручной запуск проверки новостей"""
         self.is_checking_news = True
         button.props('loading')
         ui.notify('Запущена проверка новостей на Delist/ST...', type='info')
         try:
-            await scheduler.scraper_service.check_all_risks()
+            await services.scraper.check_all_risks()
             try:
                 ui.notify('Проверка новостей завершена!', type='positive')
             except:
@@ -89,14 +86,13 @@ class ManualControlsPage:
             except:
                 pass
             
-    async def run_cmc_update(self, scheduler, button):
+    async def run_cmc_update(self, button):
         """Ручной запуск обновления рангов CMC"""
         self.is_updating_ranks = True
         button.props('loading')
         ui.notify('Обновление рангов CMC запущено...', type='info')
         try:
-            # Используем сервис из планировщика или через get_cmc_service
-            msg = await scheduler.cmc_service.sync_ranks()
+            msg = await services.cmc.sync_ranks()
             try:
                 ui.notify(f'Готово: {msg}', type='positive')
             except:
@@ -143,7 +139,6 @@ class ManualControlsPage:
             await self._clear_table(DelistingEvent, "DelistingEvent (События)")
 
     async def render(self):
-        scheduler = get_scheduler()
 
         with ui.card().classes('w-full max-w-3xl mx-auto p-4'):
             ui.label('Принудительный запуск').classes('text-2xl font-bold mb-4')
@@ -164,7 +159,7 @@ class ManualControlsPage:
                     with ui.column().classes('gap-1'):
                         ui.label('2. Обновить OHLCv').classes('font-bold')
                         ui.label('Скачивает OHLCv для всех активных пар и запускает проверку на Pump/Dump и объемы').classes('text-xs text-gray-500')
-                    btn_ohlcv = ui.button('Скачать OHLCv', on_click=lambda: self.run_ohlcv_update(scheduler, btn_ohlcv)).props('color=green dense size=md icon=download')
+                    btn_ohlcv = ui.button('Скачать OHLCv', on_click=lambda: self.run_ohlcv_update(btn_ohlcv)).props('color=green dense size=md icon=download')
 
                 # 3. Scraper
                 with ui.row().classes('w-full items-center justify-between p-4 bg-gray-50 rounded border'):
@@ -172,7 +167,7 @@ class ManualControlsPage:
                         ui.label('3. Проверка новостей (Delisting/ST)').classes('font-bold')
                         ui.label('Запускает скраперы Gate.io/MEXC/Binance и API проверки').classes('text-xs text-gray-500')
                     
-                    btn_check = ui.button('Проверить риски', on_click=lambda: self.run_scraper_check(scheduler, btn_check)).props('color=orange dense size=md icon=bug_report')
+                    btn_check = ui.button('Проверить риски', on_click=lambda: self.run_scraper_check(btn_check)).props('color=orange dense size=md icon=bug_report')
 
                 # 4. CMC Ranks
                 with ui.row().classes('w-full items-center justify-between p-4 bg-gray-50 rounded border'):
@@ -180,7 +175,7 @@ class ManualControlsPage:
                         ui.label('4. Обновление рангов CMC').classes('font-bold')
                         ui.label('Загружает ранги монет с CoinMarketCap для активных пар').classes('text-xs text-gray-500')
                     
-                    btn_ranks = ui.button('Обновить ранги', on_click=lambda: self.run_cmc_update(scheduler, btn_ranks)).props('color=purple dense size=md icon=leaderboard')
+                    btn_ranks = ui.button('Обновить ранги', on_click=lambda: self.run_cmc_update(btn_ranks)).props('color=purple dense size=md icon=leaderboard')
             
             # --- Danger Zone ---
             ui.separator().classes('my-4')

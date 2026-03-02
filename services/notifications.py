@@ -4,7 +4,7 @@ from sqlmodel import select
 
 from database.core import get_session
 from database.models import Signal
-from services.system import get_telegram_service
+from services.system import services
 
 async def send_and_log_signal(signal_id: int, message: str, prefix: str = "") -> None:
     """Send a Telegram message and, on success, mark the corresponding Signal as sent.
@@ -19,7 +19,7 @@ async def send_and_log_signal(signal_id: int, message: str, prefix: str = "") ->
 
     # Send via Telegram service
     try:
-        telegram = get_telegram_service()
+        telegram = services.telegram
         sent = await telegram.send_message(full_msg)
     except Exception as e:
         logger.error(f"Failed to obtain Telegram service or send message: {e}")

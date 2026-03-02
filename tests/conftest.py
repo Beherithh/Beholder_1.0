@@ -62,12 +62,11 @@ def config_service(session_factory):
 @pytest.fixture(autouse=True)
 def mock_get_config_service(config_service):
     """
-    Автоматически мокает get_config_service во всех тестах,
+    Автоматически подменяет services.config во всех тестах,
     чтобы он возвращал тестовый экземпляр.
     """
-    with patch("services.system.get_config_service") as mock:
-        mock.return_value = config_service
-        yield mock
+    with patch("services.system.services.config", config_service):
+        yield
 
 @pytest.fixture
 def create_pair(db_session: AsyncSession):

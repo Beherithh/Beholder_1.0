@@ -23,8 +23,8 @@ class CMCService:
         logger.info(f"=== Запуск обновления рангов СМС ===")
 
         # Получаем конфиг через ConfigService
-        from services.system import get_config_service
-        config = await get_config_service().get_cmc_config()
+        from services.system import services
+        config = await services.config.get_cmc_config()
 
         if not config.api_key:
             logger.warning("CMC API Key не найден. Пропуск обновления рангов.")

@@ -3,7 +3,7 @@ from nicegui import ui
 from sqlmodel import select, desc, delete
 from database.core import get_session
 from database.models import Signal, SignalType, MonitoredPair, DelistingEvent
-from services.system import get_scraper_service
+from services.system import services
 from ui.layout import create_header
 
 class SignalsPage:
@@ -26,7 +26,7 @@ class SignalsPage:
 
     async def resolve_risk_event(self, signal_id: int):
         """
-        Полное разрешение события риска для КОНКРЕТНОЙ МОНЕТЫ, связанной с сигналом.
+        Полный сброс и удаление событий и сигналов риска для КОНКРЕТНОЙ МОНЕТЫ, связанной с сигналом.
         """
         async with get_session() as session:
             # 1. Найти исходный сигнал и связанную с ним пару
@@ -92,11 +92,10 @@ class SignalsPage:
             ui.notify(f'Событие для {base_currency} и {len(signals_to_delete)} сигналов удалены.', type='positive')
 
             # 8. Запустить пересчет статусов
-            ui.notify('Запуск пересчета статусов риска...', type='info')
-            scraper_service = get_scraper_service()
-            await scraper_service._demote_orphaned_risks(session)
-            await session.commit()
-            ui.notify('Пересчет статусов завершен.', type='positive')
+            # demote_orphaned_risks сам выполняет commit() внутри
+            ui.notify('Запуск пересмотра статусов риска...', type='info')
+            await services.scraper.demote_orphaned_risks(session)
+            ui.notify('Пересмотр статусов завершен.', type='positive')
 
         # 9. Обновить UI
         await self.refresh_table()

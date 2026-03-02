@@ -194,9 +194,9 @@ class FileWatcherService:
         Загружает список файлов из ConfigService и выполняет синхронизацию.
         Возвращает словарь со статистикой.
         """
-        from services.system import get_config_service
+        from services.system import services
         
-        files_list = await get_config_service().get_watched_files()
+        files_list = await services.config.get_watched_files()
         
         if not files_list:
             logger.warning("Нет файлов для синхронизации в настройках")
