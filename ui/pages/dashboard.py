@@ -119,16 +119,20 @@ async def get_dashboard_data() -> Dict[str, Any]:
         
         return {"rows": data_rows, "stats": stats}
 
+# Глобальное состояние фильтров для сохранения параметров между перезапусками/обновлениями
+GLOBAL_FILTER_STATE = {
+    "filter_exchange": "Все",
+    "filter_status": "Все",
+    "search_text": ""
+}
+
 @ui.page('/')
 async def dashboard_page():
     create_header()
     
-    # Локальное состояние страницы
+    # Локальное состояние страницы для данных
     state = {
-        "full_data": [],
-        "filter_exchange": "Все",
-        "filter_status": "Все",
-        "search_text": ""
+        "full_data": []
     }
     
     # UI элементы
@@ -139,16 +143,16 @@ async def dashboard_page():
         """Применение фильтров к данным таблицы"""
         filtered = state["full_data"]
         
-        if state["filter_exchange"] != 'Все':
-            filtered = [r for r in filtered if r['exchange'] == state["filter_exchange"]]
+        if GLOBAL_FILTER_STATE["filter_exchange"] != 'Все':
+            filtered = [r for r in filtered if r['exchange'] == GLOBAL_FILTER_STATE["filter_exchange"]]
             
-        if state["filter_status"] == 'Все кроме NORMAL':
+        if GLOBAL_FILTER_STATE["filter_status"] == 'Все кроме NORMAL':
             filtered = [r for r in filtered if r['risk_level'] != 'NORMAL']
-        elif state["filter_status"] != 'Все':
-            filtered = [r for r in filtered if r['risk_level'] == state["filter_status"]]
+        elif GLOBAL_FILTER_STATE["filter_status"] != 'Все':
+            filtered = [r for r in filtered if r['risk_level'] == GLOBAL_FILTER_STATE["filter_status"]]
             
-        if state["search_text"]:
-            search = str(state["search_text"]).lower()
+        if GLOBAL_FILTER_STATE["search_text"]:
+            search = str(GLOBAL_FILTER_STATE["search_text"]).lower()
             filtered = [r for r in filtered if search in str(list(r.values())).lower()]
 
         if table_ref:
@@ -181,9 +185,9 @@ async def dashboard_page():
 
     def reset_filters():
         """Сброс фильтров"""
-        state["filter_exchange"] = 'Все'
-        state["filter_status"] = 'Все'
-        state["search_text"] = ''
+        GLOBAL_FILTER_STATE["filter_exchange"] = 'Все'
+        GLOBAL_FILTER_STATE["filter_status"] = 'Все'
+        GLOBAL_FILTER_STATE["search_text"] = ''
         apply_filters()
 
     # --- UI Layout ---
@@ -214,21 +218,21 @@ async def dashboard_page():
             search_input = ui.input(
                 placeholder='Поиск...',
                 on_change=lambda e: apply_filters()
-            ).classes('w-48').props('dense outlined').bind_value(state, 'search_text')
+            ).classes('w-48').props('dense outlined').bind_value(GLOBAL_FILTER_STATE, 'search_text')
 
             ex_select = ui.select(
                 options=['Все'], 
-                value='Все',
+                value=GLOBAL_FILTER_STATE['filter_exchange'],
                 label='Биржа', 
                 on_change=lambda e: apply_filters()
-            ).classes('w-28').props('dense outlined').bind_value(state, 'filter_exchange')
+            ).classes('w-28').props('dense outlined').bind_value(GLOBAL_FILTER_STATE, 'filter_exchange')
 
             st_select = ui.select(
                 options=['Все', 'Все кроме NORMAL'], 
-                value='Все',
+                value=GLOBAL_FILTER_STATE['filter_status'],
                 label='Статус', 
                 on_change=lambda e: apply_filters()
-            ).classes('w-36').props('dense outlined').bind_value(state, 'filter_status')
+            ).classes('w-36').props('dense outlined').bind_value(GLOBAL_FILTER_STATE, 'filter_status')
             
             ui.button(icon='restart_alt', on_click=reset_filters).props('flat round dense')
 
