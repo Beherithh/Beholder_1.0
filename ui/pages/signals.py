@@ -124,6 +124,9 @@ class SignalsPage:
         
         self.full_rows = []
         for s, p in self.signals:
+            url_match = re.search(r'https?://[^\s]+', s.raw_message)
+            announcement_url = url_match.group(0) if url_match else None
+            
             self.full_rows.append({
                 'id': s.id,
                 'time': s.created_at.strftime('%Y-%m-%d %H:%M:%S'),
@@ -132,7 +135,8 @@ class SignalsPage:
                 'type': s.type.value,
                 'message': s.raw_message,
                 'sent': s.is_sent,
-                'type_raw': s.type
+                'type_raw': s.type,
+                'announcement_url': announcement_url
             })
             
         if self.table:
@@ -143,6 +147,9 @@ class SignalsPage:
         await self.load_signals()
         self.full_rows = []
         for s, p in self.signals:
+            url_match = re.search(r'https?://[^\s]+', s.raw_message)
+            announcement_url = url_match.group(0) if url_match else None
+            
             self.full_rows.append({
                 'id': s.id,
                 'time': s.created_at.strftime('%Y-%m-%d %H:%M:%S'),
@@ -151,7 +158,8 @@ class SignalsPage:
                 'type': s.type.value,
                 'message': s.raw_message,
                 'sent': s.is_sent,
-                'type_raw': s.type
+                'type_raw': s.type,
+                'announcement_url': announcement_url
             })
 
         def apply_filters():
@@ -220,9 +228,19 @@ class SignalsPage:
             
             self.table.add_slot('body-cell-type', '''
                 <q-td :props="props">
-                    <q-badge :class="props.row.type_raw === 'price_change' ? 'bg-blue' : (props.row.type_raw === 'volume_alert' ? 'bg-purple' : (props.row.type_raw === 'delisting_warning' ? 'bg-red' : 'bg-orange'))">
-                        {{ props.value }}
-                    </q-badge>
+                    <template v-if="props.row.announcement_url">
+                        <a :href="props.row.announcement_url" target="_blank" class="no-underline">
+                            <q-badge :class="props.row.type_raw === 'price_change' ? 'bg-blue' : (props.row.type_raw === 'volume_alert' ? 'bg-purple' : (props.row.type_raw === 'delisting_warning' ? 'bg-red' : 'bg-orange'))" class="cursor-pointer hover:bg-gray-200">
+                                {{ props.value }}
+                                <q-icon name="open_in_new" size="xs" class="q-ml-xs" />
+                            </q-badge>
+                        </a>
+                    </template>
+                    <template v-else>
+                        <q-badge :class="props.row.type_raw === 'price_change' ? 'bg-blue' : (props.row.type_raw === 'volume_alert' ? 'bg-purple' : (props.row.type_raw === 'delisting_warning' ? 'bg-red' : 'bg-orange'))">
+                            {{ props.value }}
+                        </q-badge>
+                    </template>
                 </q-td>
             ''')
 
