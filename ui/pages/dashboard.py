@@ -171,7 +171,10 @@ async def dashboard_page():
         statuses = ['Все', 'Все кроме NORMAL'] + sorted(list(set(r['risk_level'] for r in state["full_data"])))
         
         ex_select.options = exchanges
+        ex_select.update()
+        
         st_select.options = statuses
+        st_select.update()
         
         apply_filters()
         ui.notify('Данные обновлены', type='info')
@@ -207,22 +210,24 @@ async def dashboard_page():
 
             ui.space()
 
-            # Фильтры с использованием bind_value и on_change
+            # Фильтры с использованием bind_value и функция on_change напрямую
             search_input = ui.input(
                 placeholder='Поиск...',
-                on_change=apply_filters
+                on_change=lambda e: apply_filters()
             ).classes('w-48').props('dense outlined').bind_value(state, 'search_text')
 
             ex_select = ui.select(
-                ['Все'], 
+                options=['Все'], 
+                value='Все',
                 label='Биржа', 
-                on_change=apply_filters
+                on_change=lambda e: apply_filters()
             ).classes('w-28').props('dense outlined').bind_value(state, 'filter_exchange')
 
             st_select = ui.select(
-                ['Все'], 
+                options=['Все', 'Все кроме NORMAL'], 
+                value='Все',
                 label='Статус', 
-                on_change=apply_filters
+                on_change=lambda e: apply_filters()
             ).classes('w-36').props('dense outlined').bind_value(state, 'filter_status')
             
             ui.button(icon='restart_alt', on_click=reset_filters).props('flat round dense')
