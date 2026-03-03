@@ -214,6 +214,14 @@ async def dashboard_page():
 
             ui.space()
 
+            initial_ex_options = ['Все']
+            if GLOBAL_FILTER_STATE['filter_exchange'] not in initial_ex_options:
+                initial_ex_options.append(GLOBAL_FILTER_STATE['filter_exchange'])
+                
+            initial_st_options = ['Все', 'Все кроме NORMAL']
+            if GLOBAL_FILTER_STATE['filter_status'] not in initial_st_options:
+                initial_st_options.append(GLOBAL_FILTER_STATE['filter_status'])
+
             # Фильтры с использованием bind_value и функция on_change напрямую
             search_input = ui.input(
                 placeholder='Поиск...',
@@ -221,14 +229,14 @@ async def dashboard_page():
             ).classes('w-48').props('dense outlined').bind_value(GLOBAL_FILTER_STATE, 'search_text')
 
             ex_select = ui.select(
-                options=['Все'], 
+                options=initial_ex_options, 
                 value=GLOBAL_FILTER_STATE['filter_exchange'],
                 label='Биржа', 
                 on_change=lambda e: apply_filters()
             ).classes('w-28').props('dense outlined').bind_value(GLOBAL_FILTER_STATE, 'filter_exchange')
 
             st_select = ui.select(
-                options=['Все', 'Все кроме NORMAL'], 
+                options=initial_st_options, 
                 value=GLOBAL_FILTER_STATE['filter_status'],
                 label='Статус', 
                 on_change=lambda e: apply_filters()

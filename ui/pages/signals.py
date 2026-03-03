@@ -193,7 +193,12 @@ class SignalsPage:
                 ui.button(icon='refresh', on_click=refresh_and_filter).props('flat dense')
 
             initial_exchanges = ['Все'] + sorted(list(set(r['exchange'] for r in self.full_rows if r['exchange'] != '-')))
+            if GLOBAL_SIGNALS_FILTER_STATE['filter_exchange'] not in initial_exchanges:
+                initial_exchanges.append(GLOBAL_SIGNALS_FILTER_STATE['filter_exchange'])
+                
             initial_types = ['Все'] + sorted(list(set(r['type'] for r in self.full_rows)))
+            if GLOBAL_SIGNALS_FILTER_STATE['filter_type'] not in initial_types:
+                initial_types.append(GLOBAL_SIGNALS_FILTER_STATE['filter_type'])
 
             with ui.row().classes('w-full gap-2 items-center mb-4 wrap'):
                 search_input = ui.input(placeholder='Поиск пары / текста...', on_change=lambda e: apply_filters()).classes('w-48').props('dense outlined').bind_value(GLOBAL_SIGNALS_FILTER_STATE, 'search_text')
