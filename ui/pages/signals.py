@@ -265,6 +265,10 @@ class SignalsPage:
             
             self.table.on('resolve_event', lambda msg: handle_resolve_event(msg.args))
 
+        # Применяем фильтры сразу после отрисовки таблицы, 
+        # чтобы данные соответствовали сохраненному GLOBAL_SIGNALS_FILTER_STATE
+        self.apply_filters()
+
 @ui.page('/signals')
 async def signals_page():
     create_header()
