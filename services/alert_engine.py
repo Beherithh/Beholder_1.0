@@ -95,7 +95,7 @@ class AlertEngine:
                              if abs(change) >= threshold:
                                 is_triggered = True
                                 alert_msg = f"📉 DUMP <b>{pair.symbol}</b> \n" \
-                                            f"({pair.exchange}): {pair.source_label}\n" \
+                                            f"{pair.exchange}: {pair.source_label}\n" \
                                             f"<b>{change:+.0f}%</b> {period_str}\n" \
                                             f"Min: {p_min} | Max: {p_max}"
                     
@@ -105,7 +105,7 @@ class AlertEngine:
                              if change >= threshold:
                                 is_triggered = True
                                 alert_msg = f"📈 PUMP <b>{pair.symbol}</b> \n" \
-                                            f"({pair.exchange}): {pair.source_label}\n" \
+                                            f"{pair.exchange}: {pair.source_label}\n" \
                                             f"<b>{change:+.0f}%</b> {period_str}\n" \
                                             f"Min: {p_min} | Max: {p_max}"
 
@@ -163,18 +163,16 @@ class AlertEngine:
 
         total_v_usdt = total_v_raw * rate
         
-        period_str = f"in {v_period} days"
+        period_str = f"Last {v_period} days"
 
         if total_v_usdt <= v_threshold * v_period:
             v_msg = f"📊 Low Volume <b>{pair.symbol}</b>\n" \
-                    f"({pair.exchange}): {pair.source_label}\n" \
-                    f"Volume {period_str}: {total_v_usdt:,.0f} USDT\n" \
-                    f"<b>{total_v_usdt/v_period:,.0f}</b> USDT/day\n"    
+                    f"{pair.exchange}: {pair.source_label}\n" \
+                    f"{period_str}: <b>{total_v_usdt/v_period:,.0f}</b> USDT/day\n" \
+                    f"Threshold: {v_threshold:,.0f}"
             
             if rate != 1.0:
                 v_msg += f" (quote {quote}: {rate})"
-            
-            v_msg += f"\nThreshold: {v_threshold:,.0f} USDT"
             await self._create_or_update_signal(session, SignalType.VOLUME_ALERT, v_msg, pair.id, unique_filter=period_str)
         else:
             # Объем в норме -> удаляем старые алерты по объему
