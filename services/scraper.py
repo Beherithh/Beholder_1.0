@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import asyncio
+from typing import TYPE_CHECKING
 from loguru import logger
 from sqlmodel import select, delete
 
@@ -13,7 +16,12 @@ from services.article_parser import ArticleParser
 from services.api_risk_checker import ApiRiskCheckerService
 from services.telegram_monitor import TelegramMonitorService
 from services.blog_scraper import BlogScraperService
+from services.file_watcher import FileWatcherService
+from services.config import ConfigService
 from database.core import get_session
+
+if TYPE_CHECKING:
+    from services.notifications import NotificationService
 
 class ScraperService:
     """
@@ -24,14 +32,16 @@ class ScraperService:
     - ApiRiskCheckerService (API бирж)
     """
 
-    def __init__(self, session_factory):
+    def __init__(self, session_factory, file_watcher: FileWatcherService, config_service: ConfigService, notification_service: "NotificationService"):
         self.session_factory = session_factory
+        self.file_watcher = file_watcher
+        self.notification_service = notification_service
         self.web_scraper = WebScraper()
         self.article_parser = ArticleParser()
         
         # Инициализация подсистем
         self.api_risk_checker = ApiRiskCheckerService(session_factory)
-        self.telegram_monitor = TelegramMonitorService(session_factory, self.article_parser)
+        self.telegram_monitor = TelegramMonitorService(session_factory, self.article_parser, config_service)
         self.blog_scraper = BlogScraperService(session_factory, self.web_scraper, self.article_parser)
     
     async def _update_pair_risk(self, session, pair: MonitoredPair, new_risk: RiskLevel, 
@@ -74,9 +84,8 @@ class ScraperService:
                     await session.commit()
                     await session.refresh(new_sig)
                     
-                    # Отправка в Telegram
-                    from services.notifications import send_and_log_signal
-                    asyncio.create_task(send_and_log_signal(new_sig.id, msg, prefix=""))
+                    # Отправка через инжектированный сервис уведомлений
+                    asyncio.create_task(self.notification_service.send_and_log_signal(new_sig.id, msg, prefix=""))
                 else:
                     logger.info(f"Signal already exists, skipping: {msg[:100]}...")
 
@@ -224,8 +233,7 @@ class ScraperService:
         try:
             # 0. Синхронизация — используем существующий синглтон
             logger.info("Синхронизация списка пар из файлов...")
-            from services.system import services
-            stats = await services.file_watcher.sync_from_settings()
+            stats = await self.file_watcher.sync_from_settings()
             logger.info(f"Синхронизация завершена: {stats}")
             
             async with get_session() as session:

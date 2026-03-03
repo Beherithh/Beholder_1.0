@@ -1,4 +1,6 @@
-from typing import List, Dict, Any, Optional
+from __future__ import annotations
+
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
 import asyncio
 from datetime import datetime, timedelta, timezone
 import json
@@ -8,6 +10,10 @@ from sqlmodel import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import MonitoredPair, MonitoringStatus, Signal, SignalType
+from services.config import ConfigService
+
+if TYPE_CHECKING:
+    from services.notifications import NotificationService
 
 class CMCService:
     """
@@ -16,20 +22,12 @@ class CMCService:
     """
     BASE_URL = "https://pro-api.coinmarketcap.com"
     
-    def __init__(self, session_factory):
+    def __init__(self, session_factory, config_service: ConfigService, notification_service: "NotificationService"):
         self.session_factory = session_factory
+        self.config_service = config_service
+        self.notification_service = notification_service
 
     async def sync_ranks(self) -> str:
-        logger.info(f"=== Запуск обновления рангов СМС ===")
-
-        # Получаем конфиг через ConfigService
-        from services.system import services
-        config = await services.config.get_cmc_config()
-
-        if not config.api_key:
-            logger.warning("CMC API Key не найден. Пропуск обновления рангов.")
-            return "No API Key"
-
         """
         Обновляет ранги для всех АКТИВНЫХ пар.
         Стратегия:
@@ -38,6 +36,15 @@ class CMCService:
         3. Запросить quotes/latest
         4. Обновить поле cmc_rank в БД
         """
+        logger.info(f"=== Запуск обновления рангов СМС ===")
+
+        # Получаем конфиг через ConfigService
+        config = await self.config_service.get_cmc_config()
+
+        if not config.api_key:
+            logger.warning("CMC API Key не найден. Пропуск обновления рангов.")
+            return "No API Key"
+
         async with self.session_factory() as session:
             # 1. Получаем уникальные базовые валюты из активных пар
             stmt = select(MonitoredPair).where(MonitoredPair.monitoring_status == MonitoringStatus.ACTIVE)
@@ -157,7 +164,5 @@ class CMCService:
         await session.commit()
         await session.refresh(signal)
 
-        # Отправляем через единый механизм уведомлений
-        from services.notifications import send_and_log_signal
-        asyncio.create_task(send_and_log_signal(signal.id, msg_text, prefix=""))
+        asyncio.create_task(self.notification_service.send_and_log_signal(signal.id, msg_text, prefix=""))
         logger.warning(f"NEW CMC SIGNAL: {msg_text}")

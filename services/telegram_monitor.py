@@ -5,15 +5,17 @@ from sqlmodel import select
 
 from database.models import AppSettings, DelistingEvent, DelistingEventType
 from services.article_parser import ArticleParser
+from services.config import ConfigService
 
 class TelegramMonitorService:
     """
     Сервис для мониторинга Telegram-каналов на предмет анонсов.
     """
 
-    def __init__(self, session_factory, article_parser: ArticleParser):
+    def __init__(self, session_factory, article_parser: ArticleParser, config_service: ConfigService):
         self.session_factory = session_factory
         self.article_parser = article_parser
+        self.config_service = config_service
 
     async def check_binance_telegram_channel(self) -> int:
         """
@@ -28,8 +30,7 @@ class TelegramMonitorService:
             return 0
         
         # 2. Проверка конфигурации
-        from services.system import services
-        tg_conf = await services.config.get_telegram_config()
+        tg_conf = await self.config_service.get_telegram_config()
         
         if not tg_conf.api_id or not tg_conf.api_hash:
             logger.warning("Telegram API credentials не настроены. Пропуск проверки @binance_announcements")

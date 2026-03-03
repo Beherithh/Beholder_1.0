@@ -20,6 +20,7 @@ from services.scraper import ScraperService
 from services.telegram import TelegramService
 from services.config import ConfigService
 from services.alert_engine import AlertEngine
+from services.notifications import NotificationService
 
 
 class ServiceContainer:
@@ -37,6 +38,7 @@ class ServiceContainer:
         # Каждый атрибут — None до вызова init_services()
         self.config: ConfigService | None = None
         self.alert_engine: AlertEngine | None = None
+        self.notifications: NotificationService | None = None
         self.market: MarketDataService | None = None
         self.scraper: ScraperService | None = None
         self.scheduler: SchedulerService | None = None
@@ -59,32 +61,43 @@ services = ServiceContainer.instance()
 async def init_services() -> None:
     """Инициализирует все сервисы. Вызывается один раз при старте приложения."""
 
-    # 0. Config Service (фундамент — от него зависят остальные)
+    # 0. Config Service (фундамент — от него зависят все остальные)
     services.config = ConfigService(get_session)
 
-    # 1. Alert Engine
-    services.alert_engine = AlertEngine(get_session)
-
-    # 2. Market Data Service (получает AlertEngine через DI)
-    services.market = MarketDataService(get_session, services.alert_engine)
-
-    # 3. Scraper Service
-    services.scraper = ScraperService(get_session)
-
-    # 4. CMC Service
-    from services.cmc import CMCService
-    services.cmc = CMCService(get_session)
-
-    # 5. Scheduler Service (нужен market, scraper и cmc)
-    services.scheduler = SchedulerService(services.market, services.scraper, services.cmc)
-
-    # 6. File Watcher Service
-    from services.file_watcher import FileWatcherService
-    services.file_watcher = FileWatcherService(get_session)
-
-    # 7. Telegram Service + загрузка настроек из БД
+    # 1. Telegram Service — инициализируем рано, т.к. другие сервисы могут посылать алерты
     tg_conf = await services.config.get_telegram_config()
     services.telegram = TelegramService(token=tg_conf.bot_token, chat_id=tg_conf.chat_id)
 
     if tg_conf.bot_token and tg_conf.chat_id:
         logger.info("Telegram Service инициализирован настройками из БД.")
+    else:
+        logger.warning("Telegram Service инициализирован без credentials (не настроен в БД).")
+
+    # 2. Notification Service (получает TelegramService через DI — нет global-состояния)
+    services.notifications = NotificationService(services.telegram, get_session)
+
+    # 3. Alert Engine (получает notification_service через DI)
+    services.alert_engine = AlertEngine(get_session, services.notifications)
+
+    # 4. File Watcher Service (нужен scraper-у)
+    from services.file_watcher import FileWatcherService
+    services.file_watcher = FileWatcherService(get_session, config_service=services.config)
+
+    # 5. Scraper Service (получает file_watcher, config, notifications через DI)
+    services.scraper = ScraperService(
+        get_session,
+        file_watcher=services.file_watcher,
+        config_service=services.config,
+        notification_service=services.notifications,
+    )
+
+    # 6. Market Data Service (получает AlertEngine и config через DI)
+    services.market = MarketDataService(get_session, services.alert_engine, config_service=services.config)
+
+    # 7. CMC Service (получает config и notifications через DI)
+    from services.cmc import CMCService
+    services.cmc = CMCService(get_session, config_service=services.config, notification_service=services.notifications)
+
+    # 8. Scheduler Service (нужен market, scraper, cmc и config)
+    services.scheduler = SchedulerService(services.market, services.scraper, services.cmc, config_service=services.config)
+

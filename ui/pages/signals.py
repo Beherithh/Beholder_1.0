@@ -107,6 +107,7 @@ class SignalsPage:
             SignalType.VOLUME_ALERT: 'bg-purple-100 text-purple-800',
             SignalType.DELISTING_WARNING: 'bg-red-100 text-red-800 font-bold',
             SignalType.ST_WARNING: 'bg-yellow-100 text-yellow-800',
+            SignalType.RANK_WARNING: 'bg-orange-100 text-orange-800',
         }
         return styles.get(sig_type, 'bg-gray-100 text-gray-800')
 

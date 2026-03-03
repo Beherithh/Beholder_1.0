@@ -18,6 +18,11 @@ sqlite_url = f"sqlite+aiosqlite:///{sqlite_file_name}"
 # connect_args={"timeout": 30} позволяет SQLite ждать до 30 секунд, если база заблокирована другим процессом
 engine = create_async_engine(sqlite_url, echo=False, connect_args={"timeout": 30})
 
+# SessionFactory создаётся ОДИН РАЗ на уровне модуля — не при каждом вызове get_session!
+async_session_factory = sessionmaker(
+    engine, class_=AsyncSession, expire_on_commit=False
+)
+
 @event.listens_for(engine.sync_engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
@@ -77,8 +82,5 @@ async def get_session() -> AsyncSession:
     Генератор сессий базы данных.
     Используется c конструкцией 'async with' для выполнения запросов.
     """
-    async_session = sessionmaker(
-        engine, class_=AsyncSession, expire_on_commit=False
-    )
-    async with async_session() as session:
+    async with async_session_factory() as session:
         yield session

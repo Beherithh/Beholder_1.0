@@ -6,7 +6,7 @@
   2. match_monitored_pairs_with_events — кросс-матч пар и событий делистинга
 """
 import pytest
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, AsyncMock, MagicMock
 from sqlmodel import select
 
 from database.models import (
@@ -37,9 +37,9 @@ class TestUpdatePairRisk:
         await db_session.commit()
         await db_session.refresh(pair)
 
-        service = ScraperService(session_factory)
+        service = ScraperService(session_factory, file_watcher=MagicMock(), config_service=MagicMock(), notification_service=MagicMock())
 
-        with patch("services.notifications.send_and_log_signal", new_callable=AsyncMock):
+        with patch.object(service.notification_service, 'send_and_log_signal', new_callable=AsyncMock):
             changed = await service._update_pair_risk(
                 db_session, pair, new_risk,
                 SignalType.ST_WARNING, f"⚠️ ST WARNING! {pair.symbol}"
@@ -68,9 +68,9 @@ class TestUpdatePairRisk:
         await db_session.commit()
         await db_session.refresh(pair)
 
-        service = ScraperService(session_factory)
+        service = ScraperService(session_factory, file_watcher=MagicMock(), config_service=MagicMock(), notification_service=MagicMock())
 
-        with patch("services.notifications.send_and_log_signal", new_callable=AsyncMock):
+        with patch.object(service.notification_service, 'send_and_log_signal', new_callable=AsyncMock):
             changed = await service._update_pair_risk(
                 db_session, pair, RiskLevel.DELISTING_PLANNED,
                 SignalType.DELISTING_WARNING, "⚠️ DELIST DUP/USDT"
@@ -101,9 +101,9 @@ class TestMatchMonitoredPairsWithEvents:
         db_session.add(event)
         await db_session.commit()
 
-        service = ScraperService(session_factory)
+        service = ScraperService(session_factory, file_watcher=MagicMock(), config_service=MagicMock(), notification_service=MagicMock())
 
-        with patch("services.notifications.send_and_log_signal", new_callable=AsyncMock):
+        with patch.object(service.notification_service, 'send_and_log_signal', new_callable=AsyncMock):
             updated = await service.match_monitored_pairs_with_events(db_session)
 
         assert updated >= 1
@@ -128,9 +128,9 @@ class TestMatchMonitoredPairsWithEvents:
         db_session.add(event)
         await db_session.commit()
 
-        service = ScraperService(session_factory)
+        service = ScraperService(session_factory, file_watcher=MagicMock(), config_service=MagicMock(), notification_service=MagicMock())
 
-        with patch("services.notifications.send_and_log_signal", new_callable=AsyncMock):
+        with patch.object(service.notification_service, 'send_and_log_signal', new_callable=AsyncMock):
             await service.match_monitored_pairs_with_events(db_session)
 
         await db_session.refresh(pair)
@@ -146,7 +146,7 @@ class TestMatchMonitoredPairsWithEvents:
         db_session.add(pair)
         await db_session.commit()
 
-        service = ScraperService(session_factory)
+        service = ScraperService(session_factory, file_watcher=MagicMock(), config_service=MagicMock(), notification_service=MagicMock())
         updated = await service.match_monitored_pairs_with_events(db_session)
 
         assert updated == 0

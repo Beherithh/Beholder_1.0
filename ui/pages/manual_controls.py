@@ -144,7 +144,6 @@ class ManualControlsPage:
             ui.label('Принудительный запуск').classes('text-2xl font-bold mb-4')
 
             # --- Manual Actions ---
-            ui.label().classes('text-lg font-bold')
             with ui.column().classes('gap-2 w-full'):
                 
                 # 1. Sync

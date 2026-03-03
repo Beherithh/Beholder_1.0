@@ -24,17 +24,23 @@ class TestScraperService:
              patch('services.scraper.ApiRiskCheckerService') as MockApiRiskChecker, \
              patch('services.scraper.TelegramMonitorService') as MockTelegramMonitor, \
              patch('services.scraper.BlogScraperService') as MockBlogScraper:
-            
-            service = ScraperService(mock_session_factory)
-            
+
+            # Мокаем FileWatcherService и ConfigService для DI
+            mock_file_watcher = AsyncMock()
+            mock_file_watcher.sync_from_settings = AsyncMock(return_value="Synced")
+            mock_config = AsyncMock()
+            mock_notification = AsyncMock()
+
+            service = ScraperService(mock_session_factory, mock_file_watcher, mock_config, mock_notification)
+
             # Настраиваем моки подсистем
             service.api_risk_checker.check_api_risks = AsyncMock(return_value=False)
             service.telegram_monitor.check_binance_telegram_channel = AsyncMock(return_value=0)
             service.blog_scraper.check_delistings_blog = AsyncMock(return_value=0)
-            
+
             # Мокаем метод матчинга, так как он сложный и требует БД
             service.match_monitored_pairs_with_events = AsyncMock(return_value=0)
-            
+
             return service
 
     @pytest.mark.asyncio
@@ -44,30 +50,20 @@ class TestScraperService:
         # Мокаем demote_orphaned_risks, чтобы он не лез в БД
         scraper_service.demote_orphaned_risks = AsyncMock()
 
-        # Мок для get_session (используется внутри check_all_risks для demote и match)
         mock_session = AsyncMock()
         mock_session_ctx = AsyncMock()
         mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
 
-        # Патчим services.file_watcher (синглтон) и get_session
-        mock_watcher = AsyncMock()
-        mock_watcher.sync_from_settings = AsyncMock(return_value="Synced")
-
-        with patch('services.scraper.get_session', return_value=mock_session_ctx), \
-             patch('services.system.services.file_watcher', mock_watcher):
-            
+        # file_watcher уже инжектирован в сервис через конструктор (mock_file_watcher из фикстуры)
+        with patch('services.scraper.get_session', return_value=mock_session_ctx):
             await scraper_service.check_all_risks()
-            
-            # Проверяем вызовы подсистем
+
             scraper_service.telegram_monitor.check_binance_telegram_channel.assert_called_once()
             scraper_service.blog_scraper.check_delistings_blog.assert_called_once()
             scraper_service.api_risk_checker.check_api_risks.assert_called_once()
-            
-            # Проверяем, что demote_orphaned_risks вызвался
-            scraper_service.demote_orphaned_risks.assert_called_once()
 
-            # Проверяем, что матчинг вызвался один раз (в конце)
+            scraper_service.demote_orphaned_risks.assert_called_once()
             scraper_service.match_monitored_pairs_with_events.assert_called_once()
 
     @pytest.mark.asyncio

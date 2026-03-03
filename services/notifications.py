@@ -1,43 +1,60 @@
+from __future__ import annotations
+
 import asyncio
+from typing import TYPE_CHECKING
 from loguru import logger
 from sqlmodel import select
 
-from database.core import get_session
 from database.models import Signal
-from services.system import services
 
-async def send_and_log_signal(signal_id: int, message: str, prefix: str = "") -> None:
-    """Send a Telegram message and, on success, mark the corresponding Signal as sent.
+if TYPE_CHECKING:
+    from services.telegram import TelegramService
 
-    Args:
-        signal_id: ID of the Signal record in the database.
-        message: The main message body.
-        prefix: Optional prefix (e.g., "[ALERT]") that will be rendered in bold.
+
+class NotificationService:
     """
-    # Build final message with optional prefix
-    full_msg = f"<b>{prefix}</b>\n{message}" if prefix else message
+    Сервис для отправки уведомлений через Telegram и записи в БД.
 
-    # Send via Telegram service
-    try:
-        telegram = services.telegram
-        sent = await telegram.send_message(full_msg)
-    except Exception as e:
-        logger.error(f"Failed to obtain Telegram service or send message: {e}")
-        sent = False
+    Зависимости передаются явно через конструктор (Dependency Injection):
+    нет глобального состояния, нет скрытых импортов.
+    """
 
-    if not sent:
-        logger.warning(f"Telegram message not sent for signal {signal_id}: {full_msg}")
-        return
+    def __init__(self, telegram: TelegramService, session_factory) -> None:
+        """
+        :param telegram: Экземпляр TelegramService для отправки сообщений.
+        :param session_factory: Фабрика сессий БД (например, get_session).
+        """
+        self.telegram = telegram
+        self.session_factory = session_factory
 
-    # Update the Signal record to reflect successful delivery
-    async with get_session() as session:
-        stmt = select(Signal).where(Signal.id == signal_id)
-        result = await session.execute(stmt)
-        sig = result.scalar_one_or_none()
-        if sig:
-            sig.is_sent = True
-            session.add(sig)
-            await session.commit()
-            logger.info(f"Signal {signal_id} marked as sent.")
-        else:
-            logger.error(f"Signal with id {signal_id} not found when trying to mark as sent.")
+    async def send_and_log_signal(self, signal_id: int, message: str, prefix: str = "") -> None:
+        """
+        Отправляет сообщение в Telegram и помечает сигнал как отправленный.
+
+        :param signal_id: ID записи Signal в БД.
+        :param message: Тело сообщения.
+        :param prefix: Необязательный префикс (выводится жирным шрифтом).
+        """
+        full_msg = f"<b>{prefix}</b>\n{message}" if prefix else message
+
+        try:
+            sent = await self.telegram.send_message(full_msg)
+        except Exception as e:
+            logger.error(f"Failed to send telegram message: {e}")
+            sent = False
+
+        if not sent:
+            logger.warning(f"Telegram message not sent for signal {signal_id}: {full_msg[:80]}...")
+            return
+
+        async with self.session_factory() as session:
+            stmt = select(Signal).where(Signal.id == signal_id)
+            result = await session.execute(stmt)
+            sig = result.scalar_one_or_none()
+            if sig:
+                sig.is_sent = True
+                session.add(sig)
+                await session.commit()
+                logger.info(f"Signal {signal_id} marked as sent.")
+            else:
+                logger.error(f"Signal {signal_id} not found when trying to mark as sent.")

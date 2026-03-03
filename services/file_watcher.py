@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import MonitoredPair, MonitoringStatus, RiskLevel, Signal
 from utils.symbol_normalizer import normalize_symbol
+from services.config import ConfigService
 
 class FileWatcherService:
     """
@@ -16,11 +17,13 @@ class FileWatcherService:
     Реализует логику Soft Delete (мягкого удаления).
     """
 
-    def __init__(self, session_factory):
+    def __init__(self, session_factory, config_service: ConfigService):
         """
         :param session_factory: Функция или генератор, возвращающая асинхронную сессию БД.
+        :param config_service: Сервис конфигурации для получения списка файлов.
         """
         self.session_factory = session_factory
+        self.config_service = config_service
 
     # Маппинг названий из файлов в ID для CCXT
     EXCHANGE_MAPPING = {
@@ -194,9 +197,7 @@ class FileWatcherService:
         Загружает список файлов из ConfigService и выполняет синхронизацию.
         Возвращает словарь со статистикой.
         """
-        from services.system import services
-        
-        files_list = await services.config.get_watched_files()
+        files_list = await self.config_service.get_watched_files()
         
         if not files_list:
             logger.warning("Нет файлов для синхронизации в настройках")

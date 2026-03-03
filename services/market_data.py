@@ -7,15 +7,17 @@ from sqlmodel import select, desc
 from database.models import MonitoredPair, MarketData
 from sqlalchemy.ext.asyncio import AsyncSession
 from services.alert_engine import AlertEngine
+from services.config import ConfigService
 
 class MarketDataService:
     """
     Сервис для загрузки рыночных данных (свечей) через CCXT.
     """
     
-    def __init__(self, session_factory, alert_engine: AlertEngine):
+    def __init__(self, session_factory, alert_engine: AlertEngine, config_service: ConfigService):
         self.session_factory = session_factory
         self.alert_engine = alert_engine
+        self.config_service = config_service
     
     async def _get_last_candle_time(self, session: AsyncSession, pair_id: int) -> datetime:
         """
@@ -166,8 +168,7 @@ class MarketDataService:
         """
         logger.info("Запуск анализа рыночных данных на алерты...")
         
-        from services.system import services
-        config = await services.config.get_alert_config()
+        config = await self.config_service.get_alert_config()
 
         async with self.session_factory() as session:
             # 2. Получаем все активные пары

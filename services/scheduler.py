@@ -8,17 +8,19 @@ from database.core import get_session
 from services.market_data import MarketDataService
 from services.scraper import ScraperService
 from services.cmc import CMCService
+from services.config import ConfigService
 
 class SchedulerService:
     """
     Сервис-планировщик для запуска фоновых задач по расписанию.
     """
     
-    def __init__(self, market_data_service: MarketDataService, scraper_service: ScraperService, cmc_service: CMCService):
+    def __init__(self, market_data_service: MarketDataService, scraper_service: ScraperService, cmc_service: CMCService, config_service: ConfigService):
         self.scheduler = AsyncIOScheduler()
         self.market_service = market_data_service
         self.scraper_service = scraper_service
         self.cmc_service = cmc_service
+        self.config_service = config_service
         
         self.job_id_market = "market_data_update"
         self.job_id_scraper = "scraper_check"
@@ -33,8 +35,7 @@ class SchedulerService:
         """
         Запускает все периодические задачи на основе настроек из ConfigService.
         """
-        from services.system import services
-        config = await services.config.get_scheduler_config()
+        config = await self.config_service.get_scheduler_config()
 
         await self.schedule_market_update(config.market_update_interval_hours)
         await self.schedule_scraper_check(config.scraper_interval_hours)

@@ -6,7 +6,7 @@
   2. _check_price_alerts — генерация алертов (pump/dump) по свечам
 """
 import pytest
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, AsyncMock, MagicMock
 from datetime import datetime, timedelta, timezone
 from sqlmodel import select
 
@@ -25,9 +25,9 @@ class TestCreateSignalIfNew:
         """В пустой БД — сигнал создаётся."""
         await setup_defaults()
         pair = await create_pair(symbol="BTC/USDT", exchange="BINANCE")
-        service = AlertEngine(session_factory)
+        service = AlertEngine(session_factory, notification_service=MagicMock())
 
-        with patch("services.notifications.send_and_log_signal", new_callable=AsyncMock):
+        with patch.object(service.notification_service, 'send_and_log_signal', new_callable=AsyncMock):
             await service._create_or_update_signal(
                 db_session, SignalType.PRICE_CHANGE, "📈 PUMP BTC/USDT +50%", pair_id=pair.id
             )
@@ -52,9 +52,9 @@ class TestCreateSignalIfNew:
         db_session.add(existing)
         await db_session.commit()
 
-        service = AlertEngine(session_factory)
+        service = AlertEngine(session_factory, notification_service=MagicMock())
 
-        with patch("services.notifications.send_and_log_signal", new_callable=AsyncMock):
+        with patch.object(service.notification_service, 'send_and_log_signal', new_callable=AsyncMock):
             await service._create_or_update_signal(
                 db_session, SignalType.PRICE_CHANGE, "📈 PUMP BTC/USDT +50%", pair_id=pair.id
             )
@@ -89,9 +89,9 @@ class TestCheckPriceAlerts:
 
         config = await config_service.get_alert_config()
 
-        service = AlertEngine(session_factory)
+        service = AlertEngine(session_factory, notification_service=MagicMock())
 
-        with patch("services.notifications.send_and_log_signal", new_callable=AsyncMock):
+        with patch.object(service.notification_service, 'send_and_log_signal', new_callable=AsyncMock):
             # Используем _check_price_alerts, так как логика теперь там
             await service._check_price_alerts(db_session, pair, config)
 
@@ -123,9 +123,9 @@ class TestCheckPriceAlerts:
 
         config = await config_service.get_alert_config()
 
-        service = AlertEngine(session_factory)
+        service = AlertEngine(session_factory, notification_service=MagicMock())
 
-        with patch("services.notifications.send_and_log_signal", new_callable=AsyncMock):
+        with patch.object(service.notification_service, 'send_and_log_signal', new_callable=AsyncMock):
             await service._check_price_alerts(db_session, pair, config)
 
         result = await db_session.execute(select(Signal))
@@ -169,9 +169,9 @@ class TestCheckPriceAlerts:
         await db_session.commit()
 
         config = await config_service.get_alert_config()
-        service = AlertEngine(session_factory)
+        service = AlertEngine(session_factory, notification_service=MagicMock())
 
-        with patch("services.notifications.send_and_log_signal", new_callable=AsyncMock):
+        with patch.object(service.notification_service, 'send_and_log_signal', new_callable=AsyncMock):
             await service._check_price_alerts(db_session, pair, config)
 
         result = await db_session.execute(select(Signal))

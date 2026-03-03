@@ -9,6 +9,7 @@ import json
 import pytest
 from pathlib import Path
 from sqlmodel import select
+from unittest.mock import MagicMock
 
 from database.models import MonitoredPair, MonitoringStatus, RiskLevel
 from services.file_watcher import FileWatcherService
@@ -36,7 +37,7 @@ class TestReadFiles:
     async def test_basic_parsing(self, tmp_path):
         """Файл Gate_instruments_USDT.json → exchange=GATEIO, symbol=BTC/USDT."""
         fp = create_json_file(tmp_path, "Gate_instruments_USDT.json", ["BTCUSDT"])
-        service = FileWatcherService(session_factory=None)  # _read_files не использует БД
+        service = FileWatcherService(session_factory=MagicMock(), config_service=MagicMock())  # _read_files не использует БД
 
         result, missing_files = await service._read_files([{"path": str(fp), "name": "Gate 1"}])
 
@@ -50,7 +51,7 @@ class TestReadFiles:
     async def test_symbol_with_separator(self, tmp_path):
         """Символ с разделителем '_' нормализуется в '/'."""
         fp = create_json_file(tmp_path, "Gate_instruments_USDT.json", ["BTC_USDT"])
-        service = FileWatcherService(session_factory=None)
+        service = FileWatcherService(session_factory=MagicMock(), config_service=MagicMock())
 
         result, missing_files = await service._read_files([{"path": str(fp), "name": "Test"}])
         _, symbol, _, _ = next(iter(result))
@@ -63,7 +64,7 @@ class TestReadFiles:
             tmp_path, "Gate_instruments_USDT.json",
             ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
         )
-        service = FileWatcherService(session_factory=None)
+        service = FileWatcherService(session_factory=MagicMock(), config_service=MagicMock())
 
         result, missing_files = await service._read_files([{"path": str(fp), "name": "Test"}])
         symbols = {sym for _, sym, _, _ in result}
@@ -72,7 +73,7 @@ class TestReadFiles:
     @pytest.mark.asyncio
     async def test_missing_file(self, tmp_path):
         """Несуществующий файл пропускается без ошибки."""
-        service = FileWatcherService(session_factory=None)
+        service = FileWatcherService(session_factory=MagicMock(), config_service=MagicMock())
 
         result, missing_files = await service._read_files([{"path": "C:/nonexistent.json", "name": "X"}])
         assert len(result) == 0
@@ -83,7 +84,7 @@ class TestReadFiles:
         """Файл без ключа listHelper — пустой результат."""
         fp = tmp_path / "Gate_instruments_USDT.json"
         fp.write_text('{"other_key": []}', encoding="utf-8")
-        service = FileWatcherService(session_factory=None)
+        service = FileWatcherService(session_factory=MagicMock(), config_service=MagicMock())
 
         result, missing_files = await service._read_files([{"path": str(fp), "name": "Test"}])
         assert len(result) == 0
@@ -92,7 +93,7 @@ class TestReadFiles:
     async def test_filename_with_number_prefix(self, tmp_path):
         """Формат '2_Gate_instruments_USDT.json' — число-префикс игнорируется."""
         fp = create_json_file(tmp_path, "2_Gate_instruments_USDT.json", ["ADAUSDT"])
-        service = FileWatcherService(session_factory=None)
+        service = FileWatcherService(session_factory=MagicMock(), config_service=MagicMock())
 
         result, missing_files = await service._read_files([{"path": str(fp), "name": "Test"}])
         exchange, symbol, _, _ = next(iter(result))
@@ -109,7 +110,7 @@ class TestSyncFiles:
     async def test_add_new_pairs(self, tmp_path, session_factory, db_session):
         """Из пустой БД — все пары добавляются как ACTIVE."""
         fp = create_json_file(tmp_path, "Gate_instruments_USDT.json", ["BTCUSDT", "ETHUSDT"])
-        service = FileWatcherService(session_factory=session_factory)
+        service = FileWatcherService(session_factory=session_factory, config_service=MagicMock())
 
         stats = await service.sync_files([{"path": str(fp), "name": "Gate 1"}])
 
@@ -127,7 +128,7 @@ class TestSyncFiles:
         """Пара исчезла из файла → статус INACTIVE (soft delete)."""
         # Шаг 1: добавляем 2 пары
         fp = create_json_file(tmp_path, "Gate_instruments_USDT.json", ["BTCUSDT", "ETHUSDT"])
-        service = FileWatcherService(session_factory=session_factory)
+        service = FileWatcherService(session_factory=session_factory, config_service=MagicMock())
         await service.sync_files([{"path": str(fp), "name": "Gate 1"}])
 
         # Шаг 2: оставляем только BTC
@@ -147,7 +148,7 @@ class TestSyncFiles:
     async def test_reactivate_pair(self, tmp_path, session_factory, db_session):
         """Пара вернулась в файл → статус снова ACTIVE."""
         fp = create_json_file(tmp_path, "Gate_instruments_USDT.json", ["BTCUSDT", "ETHUSDT"])
-        service = FileWatcherService(session_factory=session_factory)
+        service = FileWatcherService(session_factory=session_factory, config_service=MagicMock())
 
         # Шаг 1: добавляем
         await service.sync_files([{"path": str(fp), "name": "Gate 1"}])

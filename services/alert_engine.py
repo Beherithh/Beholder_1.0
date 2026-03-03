@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import asyncio
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, List, Dict
 from loguru import logger
 from sqlmodel import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,14 +10,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database.models import MonitoredPair, MarketData, Signal, SignalType
 from services.config import AlertConfig
 
+if TYPE_CHECKING:
+    from services.notifications import NotificationService
+
 class AlertEngine:
     """
     Сервис для анализа рыночных данных и генерации сигналов (Pump/Dump, Volume).
     Не занимается загрузкой данных, только анализом уже сохраненных свечей.
     """
 
-    def __init__(self, session_factory):
+    def __init__(self, session_factory, notification_service: "NotificationService"):
+        # аннотация в "" потому что NotificationService реально не загружается, а пилит через typchecking - ленивая загрузка
+        # from __future__ import annotations - убирает эту проблему, можно без "", но с "" понятнее что он реально не импортируется
         self.session_factory = session_factory
+        self.notification_service = notification_service
 
     async def analyze_pair(self, session: AsyncSession, pair: MonitoredPair, config: AlertConfig, rates: dict):
         """
@@ -229,9 +238,7 @@ class AlertEngine:
                 
                 logger.warning(f"NEW ANALYSIS SIGNAL: {msg}")
                 
-                # Импорт внутри метода во избежание циклической зависимости
-                from services.notifications import send_and_log_signal
-                asyncio.create_task(send_and_log_signal(new_sig.id, msg, prefix=""))
+                asyncio.create_task(self.notification_service.send_and_log_signal(new_sig.id, msg, prefix=""))
             except Exception as e:
                 logger.error(f"Failed to save signal to DB: {e}")
                 await session.rollback()
@@ -242,11 +249,8 @@ class AlertEngine:
                 # Данные изменились (например, просадка увеличилась) -> Обновляем текст в БД
                 # Но НЕ отправляем уведомление повторно (is_sent не трогаем)
                 sig.raw_message = msg
-                # Обновляем created_at, чтобы сигнал поднялся в списке (опционально, но полезно для сортировки)
-                # sig.created_at = datetime.now(timezone.utc) 
                 session.add(sig)
                 await session.commit()
-                # logger.info(f"Updated signal {sig.id} with new data: {msg[:50]}...")
             else:
                 # Данные идентичны -> Ничего не делаем
                 pass
