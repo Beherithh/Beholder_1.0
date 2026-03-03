@@ -2,6 +2,7 @@ from sqlmodel import SQLModel
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import event
+from sqlalchemy.pool import NullPool
 
 # Импортируем все модели, чтобы SQLAlchemy знал о таблицах
 from database.models import MonitoredPair, AppSettings, Signal, DelistingEvent
@@ -14,9 +15,15 @@ sqlite_url = f"sqlite+aiosqlite:///{sqlite_file_name}"
 
 
 
-# Создаем "движок" базы данных.
-# connect_args={"timeout": 30} позволяет SQLite ждать до 30 секунд, если база заблокирована другим процессом
-engine = create_async_engine(sqlite_url, echo=False, connect_args={"timeout": 30})
+# Использование NullPool КРИТИЧНО для SQLite в WAL режиме с aiosqlite, 
+# чтобы соединения закрывались сразу после `async with`, сбрасывая блокировки,
+# и позволяя базе делать WAL Checkpoint (иначе .db-wal разрастается до гигабайт).
+engine = create_async_engine(
+    sqlite_url, 
+    echo=False, 
+    connect_args={"timeout": 30},
+    poolclass=NullPool 
+)
 
 # SessionFactory создаётся ОДИН РАЗ на уровне модуля — не при каждом вызове get_session!
 async_session_factory = sessionmaker(
@@ -33,6 +40,8 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
     cursor.execute("PRAGMA journal_mode=WAL")
     # synchronous=NORMAL: ускоряет запись в режиме WAL, сохраняя при этом безопасность.
     cursor.execute("PRAGMA synchronous=NORMAL")
+    # Явно включаем авто-чекпоинт каждые 1000 страниц (около 4 МБ)
+    cursor.execute("PRAGMA wal_autocheckpoint=1000")
     cursor.close()
 
 async def init_db():

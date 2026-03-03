@@ -5,7 +5,7 @@ from loguru import logger
 from utils.logging_setup import init_logging
 init_logging()
 
-from database.core import init_db
+from database.core import init_db, engine
 from services.system import init_services, services
 from ui.pages.dashboard import dashboard_page
 from ui.pages.signals import signals_page
@@ -44,7 +44,14 @@ async def startup():
     
     logger.info("Система Beholder запущена.")
 
+async def shutdown():
+    logger.info("Система Beholder останавливается...")
+    services.scheduler.stop()
+    await engine.dispose()
+    logger.success("Все соединения с базой данных закрыты. WAL-файл сброшен.")
+
 app.on_startup(startup)
+app.on_shutdown(shutdown)
 
 if __name__ in {"__main__", "__mp_main__"}:
     ui.run(title='Beholder Dashboard', port=8080, reload=False, show=False)
