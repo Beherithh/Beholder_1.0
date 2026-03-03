@@ -139,9 +139,28 @@ class SignalsPage:
                 'announcement_url': announcement_url
             })
             
+            
         if self.table:
-            self.table.rows[:] = self.full_rows
+            self.apply_filters()
+
+    def apply_filters(self):
+        filtered = self.full_rows
+        if GLOBAL_SIGNALS_FILTER_STATE["filter_exchange"] != 'Все':
+            filtered = [r for r in filtered if r['exchange'] == GLOBAL_SIGNALS_FILTER_STATE["filter_exchange"]]
+        if GLOBAL_SIGNALS_FILTER_STATE["filter_type"] != 'Все':
+            filtered = [r for r in filtered if r['type'] == GLOBAL_SIGNALS_FILTER_STATE["filter_type"]]
+        if GLOBAL_SIGNALS_FILTER_STATE["search_text"]:
+            search = str(GLOBAL_SIGNALS_FILTER_STATE["search_text"]).lower()
+            filtered = [r for r in filtered if search in r['symbol'].lower() or search in r['message'].lower()]
+        if self.table:
+            self.table.rows = filtered
             self.table.update()
+
+    def reset_filters(self):
+        GLOBAL_SIGNALS_FILTER_STATE["filter_exchange"] = 'Все'
+        GLOBAL_SIGNALS_FILTER_STATE["filter_type"] = 'Все'
+        GLOBAL_SIGNALS_FILTER_STATE["search_text"] = ''
+        self.apply_filters()
 
     async def render(self):
         await self.load_signals()
@@ -162,25 +181,6 @@ class SignalsPage:
                 'announcement_url': announcement_url
             })
 
-        def apply_filters():
-            filtered = self.full_rows
-            if GLOBAL_SIGNALS_FILTER_STATE["filter_exchange"] != 'Все':
-                filtered = [r for r in filtered if r['exchange'] == GLOBAL_SIGNALS_FILTER_STATE["filter_exchange"]]
-            if GLOBAL_SIGNALS_FILTER_STATE["filter_type"] != 'Все':
-                filtered = [r for r in filtered if r['type'] == GLOBAL_SIGNALS_FILTER_STATE["filter_type"]]
-            if GLOBAL_SIGNALS_FILTER_STATE["search_text"]:
-                search = str(GLOBAL_SIGNALS_FILTER_STATE["search_text"]).lower()
-                filtered = [r for r in filtered if search in r['symbol'].lower() or search in r['message'].lower()]
-            if self.table:
-                self.table.rows = filtered
-                self.table.update()
-
-        def reset_filters():
-            GLOBAL_SIGNALS_FILTER_STATE["filter_exchange"] = 'Все'
-            GLOBAL_SIGNALS_FILTER_STATE["filter_type"] = 'Все'
-            GLOBAL_SIGNALS_FILTER_STATE["search_text"] = ''
-            apply_filters()
-
         async def refresh_and_filter():
             await self.refresh_table()
             exchanges = ['Все'] + sorted(list(set(r['exchange'] for r in self.full_rows if r['exchange'] != '-')))
@@ -189,7 +189,7 @@ class SignalsPage:
             ex_select.update()
             type_select.options = types
             type_select.update()
-            apply_filters()
+            self.apply_filters()
             ui.notify('Сигналы обновлены', type='info')
             
         async def handle_resolve_event(signal_id):
@@ -209,10 +209,10 @@ class SignalsPage:
                 initial_types.append(GLOBAL_SIGNALS_FILTER_STATE['filter_type'])
 
             with ui.row().classes('w-full gap-2 items-center mb-4 wrap'):
-                search_input = ui.input(placeholder='Поиск пары / текста...', on_change=lambda e: apply_filters()).classes('w-48').props('dense outlined').bind_value(GLOBAL_SIGNALS_FILTER_STATE, 'search_text')
-                ex_select = ui.select(options=initial_exchanges, value=GLOBAL_SIGNALS_FILTER_STATE['filter_exchange'], label='Биржа', on_change=lambda e: apply_filters()).classes('w-32').props('dense outlined').bind_value(GLOBAL_SIGNALS_FILTER_STATE, 'filter_exchange')
-                type_select = ui.select(options=initial_types, value=GLOBAL_SIGNALS_FILTER_STATE['filter_type'], label='Тип алерта', on_change=lambda e: apply_filters()).classes('w-40').props('dense outlined').bind_value(GLOBAL_SIGNALS_FILTER_STATE, 'filter_type')
-                ui.button(icon='restart_alt', on_click=reset_filters).props('flat round dense')
+                search_input = ui.input(placeholder='Поиск пары / текста...', on_change=lambda e: self.apply_filters()).classes('w-48').props('dense outlined').bind_value(GLOBAL_SIGNALS_FILTER_STATE, 'search_text')
+                ex_select = ui.select(options=initial_exchanges, value=GLOBAL_SIGNALS_FILTER_STATE['filter_exchange'], label='Биржа', on_change=lambda e: self.apply_filters()).classes('w-32').props('dense outlined').bind_value(GLOBAL_SIGNALS_FILTER_STATE, 'filter_exchange')
+                type_select = ui.select(options=initial_types, value=GLOBAL_SIGNALS_FILTER_STATE['filter_type'], label='Тип алерта', on_change=lambda e: self.apply_filters()).classes('w-40').props('dense outlined').bind_value(GLOBAL_SIGNALS_FILTER_STATE, 'filter_type')
+                ui.button(icon='restart_alt', on_click=self.reset_filters).props('flat round dense')
 
             columns = [
                 {'name': 'time', 'label': 'Время', 'field': 'time', 'sortable': True, 'align': 'left'},
