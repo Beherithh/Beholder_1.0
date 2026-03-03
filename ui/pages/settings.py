@@ -370,6 +370,7 @@ class SettingsPage:
 3. Запустите сreate_session.bat
 4. Следуйте инструкциям в консоли (введите телефон и код).
 5. После создания файла `beholder_telegram.session` перезапустите приложение.
+*** можно и не настраивать, сделано для дублирования http скрапера для Binance, но с телеграма скрапить надёжнее
             ''').classes('text-xs text-gray-700')
 
     def _render_cmc_section(self):
