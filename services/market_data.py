@@ -58,7 +58,7 @@ class MarketDataService:
                     # Если биржа вернула пустой список, значит, мы все скачали
                     break
 
-                new_count_in_batch = 0
+                new_market_data = []
                 
                 for candle in candles:
                     ts_ms, o, h, l, c, v = candle
@@ -68,19 +68,20 @@ class MarketDataService:
                     if candle_time <= last_time:
                         continue
                         
-                    market_data = MarketData(
+                    new_market_data.append(MarketData(
                         pair_id=pair.id,
                         timestamp=candle_time,
                         open=o, high=h, low=l, close=c, volume=v
-                    )
-                    session.add(market_data)
-                    new_count_in_batch += 1
+                    ))
+                
+                new_count_in_batch = len(new_market_data)
                 
                 if new_count_in_batch == 0:
                     # Если мы обработали пачку, но не нашли ни одной новой свечи
                     # (например, все были дубликатами), выходим из цикла.
                     break
 
+                session.add_all(new_market_data)
                 total_new_candles += new_count_in_batch
                 
                 # Обновляем last_time для следующей итерации
@@ -142,15 +143,17 @@ class MarketDataService:
                     # Включаем встроенный rate limiter в CCXT (если есть)
                     exchange.enableRateLimit = True 
                     
-                    logger.info(f"Запуск сессии для {ex_name.upper()} (Пар: {len(exchange_pairs)})")
+                    logger.info(f"Запуск сессии для {ex_name.upper()} (Пар: {len(exchange_pairs)}) - параллельно")
                     
-                    for pair in exchange_pairs:
-                        # Открываем новую сессию БД для каждой пары
-                        async with self.session_factory() as session:
-                            await self.update_pair_history(session, exchange, pair)
-                        
-                        # Дополнительная задержка между обработкой пар
-                        await asyncio.sleep(1)
+                    semaphore = asyncio.Semaphore(5)
+                    
+                    async def process_pair(p):
+                        async with semaphore:
+                            async with self.session_factory() as db_session:
+                                await self.update_pair_history(db_session, exchange, p)
+                                
+                    tasks = [process_pair(p) for p in exchange_pairs]
+                    await asyncio.gather(*tasks)
                         
             except Exception as e:
                 logger.error(f"Критическая ошибка при работе с биржей {ex_name}: {e}")
