@@ -2,7 +2,7 @@ import re
 from nicegui import ui
 from sqlmodel import select, desc, delete
 from database.core import get_session
-from database.models import Signal, SignalType, MonitoredPair, DelistingEvent
+from database.models import Signal, SignalType, MonitoredPair, DelistingEvent, DelistingEventType
 from services.system import services
 from ui.layout import create_header
 
@@ -46,40 +46,43 @@ class SignalsPage:
             source_signal, source_pair = result
             base_currency = source_pair.base_currency
 
-            # 2. Извлечь URL из сообщения
-            url_match = re.search(r'https?://[^\s]+', source_signal.raw_message)
-            if not url_match:
-                ui.notify('Не удалось извлечь URL из сигнала. Невозможно найти связанное событие.', type='negative')
+            # 2. Определяем тип события риска из типа сигнала
+            if source_signal.type == SignalType.ST_WARNING:
+                event_type = DelistingEventType.ST
+                type_name = "ST (Специальный режим)"
+            elif source_signal.type == SignalType.DELISTING_WARNING:
+                event_type = DelistingEventType.DELISTING
+                type_name = "Делистинг"
+            else:
+                ui.notify(f'Сигнал #{signal_id} не является сигналом риска (ST/Delisting).', type='negative')
                 return
-            event_url = url_match.group(0)
 
-            # 3. Найти DelistingEvent для удаления (по URL и базовой валюте)
+            # 3. Найти ВСЕ DelistingEvent для этой монеты и этого ТИПА (захватит и HTTP, и Telegram источники)
             event_stmt = select(DelistingEvent).where(
-                DelistingEvent.announcement_url == event_url,
-                DelistingEvent.symbol == base_currency
+                DelistingEvent.symbol == base_currency,
+                DelistingEvent.type == event_type
             )
             events_to_delete = (await session.execute(event_stmt)).scalars().all()
 
             if not events_to_delete:
-                ui.notify(f'Событие риска для {base_currency} с URL {event_url} не найдено.', type='warning')
+                ui.notify(f'Активные события риска ({type_name}) для {base_currency} не найдены.', type='warning')
                 return
 
             # 4. Найти все ID пар для этой базовой валюты
             pairs_for_currency_stmt = select(MonitoredPair.id).where(MonitoredPair.symbol.like(f'{base_currency}/%'))
             pair_ids_for_currency = (await session.execute(pairs_for_currency_stmt)).scalars().all()
 
-            # 5. Найти все сигналы для удаления (по ID пар и URL)
+            # 5. Найти ВСЕ сигналы для удаления (по ID пар и ТИПУ риска)
             signals_to_delete_stmt = select(Signal).where(
                 Signal.pair_id.in_(pair_ids_for_currency),
-                Signal.raw_message.like(f'%{event_url}%')
+                Signal.type == source_signal.type
             )
             signals_to_delete = (await session.execute(signals_to_delete_stmt)).scalars().all()
 
             # 6. Показать диалог подтверждения
             with ui.dialog() as dialog, ui.card():
-                ui.label(f'Разрешить событие риска для монеты {base_currency}?').classes('text-lg font-bold')
-                ui.label(f'URL: {event_url}')
-                ui.label(f'Будет удалено событий: {len(events_to_delete)}')
+                ui.label(f'Разрешить событие: {type_name} для {base_currency}?').classes('text-lg font-bold')
+                ui.label(f'Будет удалено источников риска (в т.ч. дублей): {len(events_to_delete)}')
                 ui.label(f'Будет удалено связанных сигналов: {len(signals_to_delete)}')
                 with ui.row().classes('mt-4'):
                     ui.button('Да, разрешить', on_click=lambda: dialog.submit(True), color='red')
