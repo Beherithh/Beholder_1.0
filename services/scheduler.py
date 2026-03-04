@@ -9,17 +9,18 @@ from services.market_data import MarketDataService
 from services.scraper import ScraperService
 from services.cmc import CMCService
 from services.config import ConfigService
+from services.alert_engine import AlertEngine
 
 class SchedulerService:
     """
     Сервис-планировщик для запуска фоновых задач по расписанию.
     """
-    
-    def __init__(self, market_data_service: MarketDataService, scraper_service: ScraperService, cmc_service: CMCService, config_service: ConfigService):
+    def __init__(self, market_data_service: MarketDataService, scraper_service: ScraperService, cmc_service: CMCService, alert_engine: AlertEngine, config_service: ConfigService):
         self.scheduler = AsyncIOScheduler()
         self.market_service = market_data_service
         self.scraper_service = scraper_service
         self.cmc_service = cmc_service
+        self.alert_engine = alert_engine
         self.config_service = config_service
         
         self.job_id_market = "market_data_update"
@@ -78,11 +79,27 @@ class SchedulerService:
             interval_hours = 1
         self._schedule_job(
             job_id=self.job_id_market,
-            func=self.market_service.update_all,
+            func=self.run_market_cycle,
             interval_hours=interval_hours,
             minute_val=5, # :05 для свечей
             log_name="Планирование обновления рынка"
         )
+
+    async def run_market_cycle(self):
+        """Оркестратор полного цикла: скачивание свечей -> сбор курсов -> расчет алертов."""
+        try:
+            logger.info("Scheduler: Запуск цикла Market Data...")
+            await self.market_service.update_all()
+            
+            # Получаем курсы и конфиг
+            rates = await self.market_service.get_quote_rates()
+            config = await self.config_service.get_alert_config()
+            
+            # Запускаем анализ
+            await self.alert_engine.analyze_all(config, rates)
+            logger.info("Scheduler: Цикл Market Data завершен.")
+        except Exception as e:
+            logger.error(f"Ошибка в run_market_cycle (Scheduler): {e}")
 
     async def schedule_cmc_update(self, interval_days: int):
         """Планирование обновления рангов CMC (интервал в днях)."""

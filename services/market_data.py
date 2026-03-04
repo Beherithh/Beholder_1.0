@@ -6,7 +6,6 @@ from loguru import logger
 from sqlmodel import select, desc
 from database.models import MonitoredPair, MarketData
 from sqlalchemy.ext.asyncio import AsyncSession
-from services.alert_engine import AlertEngine
 from services.config import ConfigService
 
 class MarketDataService:
@@ -14,9 +13,8 @@ class MarketDataService:
     Сервис для загрузки рыночных данных (свечей) через CCXT.
     """
     
-    def __init__(self, session_factory, alert_engine: AlertEngine, config_service: ConfigService):
+    def __init__(self, session_factory, config_service: ConfigService):
         self.session_factory = session_factory
-        self.alert_engine = alert_engine
         self.config_service = config_service
     
     async def _get_last_candle_time(self, session: AsyncSession, pair_id: int) -> datetime:
@@ -156,38 +154,17 @@ class MarketDataService:
                         
             except Exception as e:
                 logger.error(f"Критическая ошибка при работе с биржей {ex_name}: {e}")
-            
+                     
         logger.info("Обновление всех пар завершено.")
-        
-        # После обновления запускаем анализ
-        await self.analyze_all_pairs_math_alerts()
 
-    async def analyze_all_pairs_math_alerts(self):
-        """
-        Проверка условий алертов изменения цен и объёма для всех активных пар.
-        """
-        logger.info("Запуск анализа рыночных данных на алерты...")
-        
-        config = await self.config_service.get_alert_config()
-
-        async with self.session_factory() as session:
-            # 2. Получаем все активные пары
-            result = await session.execute(select(MonitoredPair).where(MonitoredPair.monitoring_status == "active"))
-            pairs = result.scalars().all()
-
-            # 3. Собираем курсы Quote -> USDT
-            rates = await self._get_quote_rates(pairs)
-
-            for pair in pairs:
-                # Делегируем анализ AlertEngine
-                await self.alert_engine.analyze_pair(session, pair, config, rates)
-
-            logger.info("Анализ price/volume завершен.")
-
-    async def _get_quote_rates(self, pairs: List[MonitoredPair]) -> Dict[str, float]:
+    async def get_quote_rates(self) -> Dict[str, float]:
         """
         Получает текущие курсы Quote -> USDT для всех активных пар через CCXT.
         """
+        async with self.session_factory() as session:
+            result = await session.execute(select(MonitoredPair).where(MonitoredPair.monitoring_status == "active"))
+            pairs = result.scalars().all()
+            
         quotes = set()
         for p in pairs:
             if '/' in p.symbol:

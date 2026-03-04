@@ -91,13 +91,13 @@ async def init_services() -> None:
         notification_service=services.notifications,
     )
 
-    # 6. Market Data Service (получает AlertEngine и config через DI)
-    services.market = MarketDataService(get_session, services.alert_engine, config_service=services.config)
+    # 6. Market Data Service (получает только config через DI)
+    services.market = MarketDataService(get_session, config_service=services.config)
 
     # 7. CMC Service (получает config и notifications через DI)
     from services.cmc import CMCService
     services.cmc = CMCService(get_session, config_service=services.config, notification_service=services.notifications)
 
-    # 8. Scheduler Service (нужен market, scraper, cmc и config)
-    services.scheduler = SchedulerService(services.market, services.scraper, services.cmc, config_service=services.config)
+    # 8. Scheduler Service (нужен market, scraper, cmc, alert_engine и config)
+    services.scheduler = SchedulerService(services.market, services.scraper, services.cmc, services.alert_engine, config_service=services.config)
 

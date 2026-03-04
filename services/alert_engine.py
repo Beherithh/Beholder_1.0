@@ -25,6 +25,21 @@ class AlertEngine:
         self.session_factory = session_factory
         self.notification_service = notification_service
 
+    async def analyze_all(self, config: AlertConfig, rates: Dict[str, float]):
+        """
+        Проверка условий алертов изменения цен и объёма для всех активных пар.
+        """
+        logger.info("AlertEngine: Запуск анализа рыночных данных на алерты...")
+        
+        async with self.session_factory() as session:
+            result = await session.execute(select(MonitoredPair).where(MonitoredPair.monitoring_status == "active"))
+            pairs = result.scalars().all()
+
+            for pair in pairs:
+                await self.analyze_pair(session, pair, config, rates)
+
+        logger.info("AlertEngine: Анализ price/volume завершен.")
+
     async def analyze_pair(self, session: AsyncSession, pair: MonitoredPair, config: AlertConfig, rates: dict):
         """
         Основной метод анализа одной пары.
