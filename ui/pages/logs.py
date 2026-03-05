@@ -18,8 +18,8 @@ class ReverseLog:
 
     def push(self, text: str):
         with self.container:
-            # Создаем метку
-            lbl = ui.label(text).classes('font-mono text-xs text-white whitespace-pre-wrap border-b border-gray-700 pb-1')
+            # Создаем метку с увеличенным шрифтом (text-sm) и отступами
+            lbl = ui.label(text).classes('font-mono text-sm text-white whitespace-pre-wrap border-b border-gray-700 pb-2 mb-1')
             # Перемещаем её в начало контейнера
             lbl.move(target_index=0)
             # Сохраняем ссылку
@@ -54,7 +54,7 @@ class FilteredLogViewer:
                 # Определяем цвет в зависимости от уровня
                 color_class = self._get_log_color(text)
                 lbl = ui.label(text).classes(
-                    f'font-mono text-xs {color_class} whitespace-pre-wrap border-b border-gray-700 pb-1'
+                    f'font-mono text-sm {color_class} whitespace-pre-wrap border-b border-gray-700 pb-2 mb-1'
                 )
                 # Перемещаем её в начало контейнера
                 lbl.move(target_index=0)
