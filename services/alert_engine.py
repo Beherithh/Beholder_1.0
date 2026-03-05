@@ -58,24 +58,46 @@ class AlertEngine:
             ("days", "dump", config.d_dump_period, config.d_dump_threshold),
         ]
 
-        # Собираем шаблоны активных конфигураций для очистки "сирот" одним запросом
+        # === Проход  1: Собираем паттерны всех ACTIVE конфигураций ===
         active_patterns = set()
+        for period_type, direction_type, period_val, threshold in checks:
+            if period_val is None or threshold is None or threshold <= 0:
+                continue
+            period_str = f"in {period_val} {period_type}"
+            direction_tag = "PUMP" if direction_type == "pump" else "DUMP"
+            active_patterns.add(f"%{direction_tag}%{period_str}%")
 
+        # === Проход 2: Удаляем сигналы, которые уже не относятся ни к 1 активной конфиг". ===
+        # Очищаем ДО создания новых сигналов, чтобы они не были сразу ей же удалены.
+        if active_patterns:
+            cleanup_stmt = delete(Signal).where(
+                Signal.pair_id == pair.id,
+                Signal.type == SignalType.PRICE_CHANGE
+            )
+            for pattern in active_patterns:
+                cleanup_stmt = cleanup_stmt.where(Signal.raw_message.notlike(pattern))
+            await session.execute(cleanup_stmt)
+            await session.commit()
+        else:
+            # Если активных конфигураций нет вовсе - чистим всё
+            await session.execute(delete(Signal).where(
+                Signal.pair_id == pair.id,
+                Signal.type == SignalType.PRICE_CHANGE
+            ))
+            await session.commit()
+            return
+
+        # === Проход 3: Анализ и создание / обновление сигналов ===
         for period_type, direction_type, period_val, threshold in checks:
             if period_val is None or threshold is None or threshold <= 0:
                 continue
             
             period_str = f"in {period_val} {period_type}"
             direction_tag = "PUMP" if direction_type == "pump" else "DUMP"
-            
-            # Добавляем паттерн, который мы будем "защищать" от удаления
-            # Например: "%PUMP%in 6 hours%"
-            active_patterns.add(f"%{direction_tag}%{period_str}%")
 
             delta = timedelta(hours=period_val) if period_type == "hours" else timedelta(days=period_val)
             since_time = now - delta
             
-            # Берем все свечи за период
             stmt = select(MarketData).where(
                 MarketData.pair_id == pair.id,
                 MarketData.timestamp >= since_time
@@ -127,28 +149,14 @@ class AlertEngine:
             if is_triggered:
                 await self._create_or_update_signal(session, SignalType.PRICE_CHANGE, alert_msg, pair.id, unique_filter=period_str)
             else:
-                # Если условие перестало выполняться для ЭТОГО конкретного периода и направления - удаляем
+                # Условие перестало выполняться - удаляем старый сигнал для этого периода/направления
                 await session.execute(delete(Signal).where(
-                    Signal.pair_id == pair.id, 
+                    Signal.pair_id == pair.id,
                     Signal.type == SignalType.PRICE_CHANGE,
                     Signal.raw_message.like(f"%{direction_tag}%"),
                     Signal.raw_message.like(f"%{period_str}%")
                 ))
                 await session.commit()
-        
-        # Очистка "осиротевших" алертов (Config Change Cleanup)
-        # Удаляем все сигналы PUMP/DUMP для этой пары, которые НЕ соответствуют ни одной из активных конфигураций.
-        
-        cleanup_stmt = delete(Signal).where(
-            Signal.pair_id == pair.id,
-            Signal.type == SignalType.PRICE_CHANGE
-        )
-        
-        for pattern in active_patterns:
-            cleanup_stmt = cleanup_stmt.where(Signal.raw_message.notlike(pattern))
-            
-        await session.execute(cleanup_stmt)
-        await session.commit()
 
     async def _check_volume_alerts(self, session: AsyncSession, pair: MonitoredPair, config: AlertConfig, rates: dict):
         """Проверка алертов по объему"""

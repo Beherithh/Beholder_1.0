@@ -51,14 +51,16 @@ class ManualControlsPage:
                 pass
 
     async def run_ohlcv_update(self, button):
-        """Ручной запуск обновления цен"""
+        """Ручной запуск полного цикла: скачивание свечей + анализ алертов"""
         self.is_updating_ohlcv = True
         button.props('loading')
-        ui.notify('Обновление цен запущено...', type='info')
+        ui.notify('Обновление цен и анализ алертов запущены...', type='info')
         try:
-            await services.market.update_all()
+            # Вызываем полный цикл через оркестратор планировщика:
+            # update_all() → get_quote_rates() → alert_engine.analyze_all()
+            await services.scheduler.run_market_cycle()
             try:
-                ui.notify('Цены обновлены!', type='positive')
+                ui.notify('Цены обновлены, алерты проверены!', type='positive')
             except:
                 pass
         finally:
