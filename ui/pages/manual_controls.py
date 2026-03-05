@@ -135,8 +135,15 @@ class ManualControlsPage:
             await self._clear_table(Signal, "Signal (Сигналы)")
 
     async def clear_delistings(self):
-        if await self._show_confirm_dialog('Вы уверены? Это удалит все найденные события делистинга/ST.'):
+        if await self._show_confirm_dialog('Вы уверены? Это удалит все найденные события делистинга/ST (включая сброс Telegram счётчика).'):
             await self._clear_table(DelistingEvent, "DelistingEvent (События)")
+            
+            # Сбрасываем счетчик отслеживания Telegram, чтобы парсер заново перечитал старые посты
+            from database.models import AppSettings
+            async with get_session() as session:
+                await session.execute(delete(AppSettings).where(AppSettings.key == "binance_tg_last_message_id"))
+                await session.commit()
+            ui.notify('Счётчик Telegram сброшен', type='positive')
 
     async def render(self):
 
