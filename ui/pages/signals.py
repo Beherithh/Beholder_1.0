@@ -258,10 +258,10 @@ class SignalsPage:
                 <q-td :props="props" class="flex flex-nowrap gap-1 justify-center items-center h-full pt-3">
                     <q-btn flat round dense 
                            v-if="props.row.type_raw === 'delisting_warning' || props.row.type_raw === 'st_warning'"
-                           icon="task_alt" 
-                           color="green" 
+                           icon="delete" 
+                           color="red" 
                            @click="$parent.$emit('resolve_event', props.row.id)">
-                        <q-tooltip>Разрешить событие риска</q-tooltip>
+                        <q-tooltip>Очистить событие риска</q-tooltip>
                     </q-btn>
                 </q-td>
             ''')
