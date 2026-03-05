@@ -1,4 +1,5 @@
 import re
+import asyncio
 from bs4 import BeautifulSoup
 from loguru import logger
 from sqlmodel import select
