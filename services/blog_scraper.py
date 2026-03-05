@@ -132,7 +132,26 @@ class BlogScraperService:
                     logger.info(f"Checking {ex_name} at {source['url']}...")
                     
                     try:
-                        html = await self.web_scraper.fetch_html(source["url"])
+                        # ДЛЯ BINANCE ФРОНТЕНД БЛОКИРУЕТСЯ. ИСПОЛЬЗУЕМ ИХ ПУБЛИЧНЫЙ API.
+                        if ex_name == "BINANCE":
+                            from curl_cffi import requests
+                            api_url = "https://www.binance.com/bapi/composite/v1/public/cms/article/catalog/list/query?catalogId=161&pageNo=1&pageSize=15"
+                            resp = await asyncio.get_running_loop().run_in_executor(None, lambda: requests.get(api_url, impersonate="chrome120", timeout=15))
+                            
+                            html = ""
+                            if resp.status_code == 200:
+                                data = resp.json().get('data', {}).get('articles', [])
+                                # Моделируем HTML ссылки для обратной совместимости с парсером _extract_article_links
+                                for item in data:
+                                    code = item.get('code', '')
+                                    title = item.get('title', '')
+                                    html += f'<a href="/en/support/announcement/{code}">{title}</a>\n'
+                            
+                        elif ex_name == "BINANCE_ARTICLE": # для глубокого скана
+                            pass # это обрабатывается ниже, но здесь мы получаем только списки
+                            
+                        else:
+                            html = await self.web_scraper.fetch_html(source["url"])
                         
                         # --- ДЕБАГ: Логируем размер и начало HTML для проверки блокировок ---
                         logger.debug(f"[{ex_name}] HTML Size: {len(html)} bytes")
@@ -181,7 +200,21 @@ class BlogScraperService:
                             logger.info(f"[{ex_name}] Analyzing article: {title}")
                             
                             # 2. Заходим внутрь (Deep Scan)
-                            article_html = await self.web_scraper.fetch_html(url)
+                            if ex_name == "BINANCE":
+                                from curl_cffi import requests
+                                # Извлекаем код из URL-анонса для API (например: /en/support/announcement/7bd34bbc)
+                                article_code = url.split('/')[-1]
+                                
+                                api_url = f"https://www.binance.com/bapi/composite/v1/public/cms/article/detail/query?articleCode={article_code}"
+                                resp = await asyncio.get_running_loop().run_in_executor(None, lambda: requests.get(api_url, impersonate="chrome120", timeout=15))
+                                
+                                article_html = ""
+                                if resp.status_code == 200:
+                                    data = resp.json().get('data', {})
+                                    article_html = data.get('body', '')  # Содержит сырой текст/html статьи
+                            else:
+                                article_html = await self.web_scraper.fetch_html(url)
+                                
                             affected_tokens = self.article_parser.extract_pairs_from_html(article_html, url)
                             
                             if not affected_tokens:

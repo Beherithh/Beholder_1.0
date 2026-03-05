@@ -6,6 +6,7 @@ class WebScraper:
     """
     Сервис для получения HTML-кода страниц, защищенных от ботов (Cloudflare и т.д.).
     Использует curl_cffi для подмены TLS Fingerprint, не требует локального Chrome.
+    Предыдущая версия использовала Selenium с undetected-chromedriver, была проблема с блокировками на Gate.io
     """
 
     async def fetch_html(self, url: str) -> str:
