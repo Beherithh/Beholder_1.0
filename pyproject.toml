@@ -21,6 +21,7 @@ dependencies = [
     "notebook>=7.5.3",
     "cryptography>=46.0.3",
     "undetected-chromedriver>=3.5.5",
+    "curl-cffi>=0.14.0",
 ]
 
 [dependency-groups]

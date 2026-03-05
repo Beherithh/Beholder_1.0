@@ -1,58 +1,40 @@
 import asyncio
-import time
 from loguru import logger
-import undetected_chromedriver as uc
-from undetected_chromedriver import ChromeOptions
+from curl_cffi import requests
 
 class WebScraper:
     """
     Сервис для получения HTML-кода страниц, защищенных от ботов (Cloudflare и т.д.).
-    Использует undetected-chromedriver для обхода защиты на серверах.
+    Использует curl_cffi для подмены TLS Fingerprint, не требует локального Chrome.
     """
 
     async def fetch_html(self, url: str) -> str:
         """
-        Загружает страницу через undetected Selenium и возвращает её HTML.
-        Запускается в отдельном потоке, чтобы не блокировать event loop.
+        Загружает страницу через curl_cffi с отпечатком современного Chrome.
         """
-        logger.info(f"Запуск Chrome через undetected-chromedriver для {url}...")
+        logger.info(f"Скрапинг через curl_cffi (impersonate=chrome120) для {url}...")
         
-        # Запускаем синхронную функцию в executor'е
-        html = await asyncio.get_running_loop().run_in_executor(None, self._selenium_get, url)
+        # Для curl_cffi лучше делать запросы в отдельном потоке, 
+        # хотя у них есть и AsyncSession, executor надежнее с локами
+        html = await asyncio.get_running_loop().run_in_executor(None, self._curl_get, url)
         
         if not html:
-            raise ValueError(f"Selenium вернул пустой HTML для {url}")
+            logger.warning(f"curl_cffi вернул пустой HTML для {url}")
         return html
 
-    def _selenium_get(self, url: str) -> str:
+    def _curl_get(self, url: str) -> str:
         """
-        Синхронная внутренняя функция для работы с драйвером.
+        Синхронная внутренняя функция для работы с requests.
         """
-        options = ChromeOptions()
-        # Для сервера обязательно нужен headless режим.
-        # undetected-chromedriver требует специального подхода для headless.
-        options.add_argument("--headless=new") 
-        options.add_argument("--disable-gpu")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--window-size=1920,1080")
-        
-        driver = None
         try:
-            # Инициализация undetected драйвера
-            # version_main указывает основную версию Chrome (обычно подхватывает сам)
-            driver = uc.Chrome(options=options)
+            # используем impersonate='chrome120', что обманывает Cloudflare TLS
+            response = requests.get(url, impersonate="chrome120", timeout=15)
             
-            driver.get(url)
-            # Даем время на выполнение JS и автоматическое прохождение Cloudflare challenge
-            time.sleep(10) 
-            return driver.page_source
+            # Проверяем на базовую ошибку
+            if response.status_code != 200:
+                logger.warning(f"HTTP {response.status_code} при загрузке {url}")
+                
+            return response.text
         except Exception as e:
-            logger.error(f"Selenium Error fetching {url}: {e}")
+            logger.error(f"curl_cffi Error fetching {url}: {e}")
             return ""
-        finally:
-            if driver:
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
