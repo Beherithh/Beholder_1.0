@@ -63,7 +63,7 @@ class AlertEngine:
         for period_type, direction_type, period_val, threshold in checks:
             if period_val is None or threshold is None or threshold <= 0:
                 continue
-            period_str = f"in {period_val} {period_type}"
+            period_str = f"Last {period_val} {period_type}"
             direction_tag = "PUMP" if direction_type == "pump" else "DUMP"
             active_patterns.add(f"%{direction_tag}%{period_str}%")
 
@@ -92,7 +92,7 @@ class AlertEngine:
             if period_val is None or threshold is None or threshold <= 0:
                 continue
             
-            period_str = f"in {period_val} {period_type}"
+            period_str = f"Last {period_val} {period_type}"
             direction_tag = "PUMP" if direction_type == "pump" else "DUMP"
 
             delta = timedelta(hours=period_val) if period_type == "hours" else timedelta(days=period_val)
