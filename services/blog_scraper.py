@@ -133,9 +133,28 @@ class BlogScraperService:
                     
                     try:
                         html = await self.web_scraper.fetch_html(source["url"])
+                        
+                        # --- ДЕБАГ: Логируем размер и начало HTML для проверки блокировок ---
+                        logger.debug(f"[{ex_name}] HTML Size: {len(html)} bytes")
+                        if len(html) > 0:
+                            logger.debug(f"[{ex_name}] HTML Fragment: {html[:250].replace(chr(10), ' ')}")
+                            if "cloudflare" in html.lower() or "challenge" in html.lower() or "bot" in html.lower():
+                                logger.warning(f"[{ex_name}] Possible Anti-Bot protection detected in HTML!")
+                        
                         unique_links = self._extract_article_links(html, source)
                         
                         logger.info(f"[{ex_name}] Found {len(unique_links)} candidate articles.")
+                        
+                        # --- ДЕБАГ: Логируем сами ссылки, если их 0 или слишком мало ---
+                        if len(unique_links) == 0:
+                            logger.debug(f"[{ex_name}] No links found! Checking raw <a> tags...")
+                            from bs4 import BeautifulSoup
+                            soup = BeautifulSoup(html, 'html.parser')
+                            all_a = soup.find_all('a')
+                            logger.debug(f"[{ex_name}] Total <a> tags: {len(all_a)}")
+                            if all_a:
+                                sample_links = [a.get('href') for a in all_a[:5] if a.get('href')]
+                                logger.debug(f"[{ex_name}] Sample links on page: {sample_links}")
                         
                         for url, title in unique_links.items():
                             # 1. Проверяем заголовок и URL на наличие триггеров
