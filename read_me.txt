@@ -155,7 +155,7 @@ Beholder_1.0/
 
  - Gate_instruments_USDT
  - 2_Gate_instruments_USDT
- - Gate_ANYTHING_USDT.json
+ - Gate_ANYTHING_ANYTHING
  - Kucoin Spot_instruments_BTC       (тип рынка "Spot" игнорируется)
  - 2_Kucoin Spot_instruments_BTC     (числовой префикс + тип рынка)
  - Биржа — это первое слово до пробела или `_` (группа [^ _]+).

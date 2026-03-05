@@ -60,9 +60,9 @@ class FileWatcherService:
             # Поддерживает форматы:
             # - Gate_instruments_USDT
             # - 2_Gate_instruments_USDT
-            # - Gate_ANYTHING_USDT.json
-            # - Kucoin Spot_instruments_BTC       (тип рынка "Spot" игнорируется)
-            # - 2_Kucoin Spot_instruments_BTC     (числовой префикс + тип рынка)
+            # - Gate_ANYTHING_ANYTHING
+            # - Kucoin spot_ANYTHING_BTC(or anything)       (тип рынка "Spot" игнорируется)
+            # - 2_Kucoin spot_ANYTHING_BTC(or anything)     (числовой префикс + тип рынка)
             #
             # Биржа — это первое слово до пробела или `_` (группа [^ _]+).
             # Всё между биржей и служебным словом (_instruments_ и т.п.) — тип рынка, игнорируется.
