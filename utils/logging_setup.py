@@ -17,6 +17,10 @@ def init_logging():
     # 1. Удаляем стандартный обработчик и начинаем с чистого листа
     logger.remove()
 
+    # 1.5. Принудительно задаем UTF-8 для стандартных потоков (полезно для Windows)
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+
     # 2. Обработчик для вывода в КОНСОЛЬ
     logger.add(
         sys.stdout,
@@ -36,7 +40,8 @@ def init_logging():
         retention="10 days",
         compression="zip",
         level="INFO",
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {module}:{function}:{line} - {message}"
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {module}:{function}:{line} - {message}",
+        encoding="utf-8"
     )
 
     # 4. Обработчики для UI (импортируем их здесь, чтобы избежать циклических зависимостей)
