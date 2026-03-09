@@ -71,6 +71,14 @@ class TestScraperService:
         """Проверка логики обновления риска (повышение vs понижение)"""
         session = mock_session_factory()
         
+        # Настраиваем мок session.execute() так, чтобы .first() и .scalars().first()
+        # возвращали обычные значения (не корутины), иначе возникает RuntimeWarning:
+        # "coroutine was never awaited" при вызове .first() на результате execute().
+        mock_result = MagicMock()
+        mock_result.first.return_value = None          # Сигнал не найден
+        mock_result.scalars.return_value.first.return_value = None
+        session.execute = AsyncMock(return_value=mock_result)
+        
         # Создаем тестовую пару
         pair = MonitoredPair(symbol="BTC/USDT", risk_level=RiskLevel.NORMAL)
         
@@ -81,8 +89,9 @@ class TestScraperService:
         
         assert changed is True
         assert pair.risk_level == RiskLevel.RISK_ZONE
-        # Должен быть добавлен в сессию
-        session.add.assert_called_with(pair)
+        # session.add вызывается дважды: для pair и для нового Signal,
+        # поэтому используем assert_any_call вместо assert_called_with
+        session.add.assert_any_call(pair)
         
         # 2. Попытка понизить риск (RISK_ZONE -> CROSS_RISK) - не должно сработать
         # Так как RISK_ZONE (3) > CROSS_RISK (1)
