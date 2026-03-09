@@ -26,6 +26,7 @@ class SchedulerService:
         self.job_id_market = "market_data_update"
         self.job_id_scraper = "scraper_check"
         self.job_id_cmc = "cmc_rank_update"
+        self.job_id_db_cleanup = "db_cleanup"
 
     def start(self):
         if not self.scheduler.running:
@@ -41,6 +42,7 @@ class SchedulerService:
         await self.schedule_market_update(config.market_update_interval_hours)
         await self.schedule_scraper_check(config.scraper_interval_hours)
         await self.schedule_cmc_update(config.cmc_update_interval_days)
+        await self.schedule_db_cleanup()
 
     def _schedule_job(self, job_id, func, interval_hours, minute_val, log_name):
         """Универсальный метод для планирования задачи."""
@@ -118,6 +120,20 @@ class SchedulerService:
             replace_existing=True
         )
         logger.info(f"Планирование CMC: Каждые {interval_days} дн. (в 04:30)")
+
+    async def schedule_db_cleanup(self):
+        """Планирование ежемесячной очистки старых свечей для экономии диска SQLite."""
+        if self.scheduler.get_job(self.job_id_db_cleanup):
+            self.scheduler.remove_job(self.job_id_db_cleanup)
+
+        # Запускать 1 числа каждого месяца ровно в 03:00 ночи
+        self.scheduler.add_job(
+            self.market_service.cleanup_old_market_data,
+            trigger=CronTrigger(day="1", hour="3", minute="0"),
+            id=self.job_id_db_cleanup,
+            replace_existing=True
+        )
+        logger.info("Планирование фоновой очистки БД: 1 числа каждого месяца (в 03:00)")
 
     async def update_cmc_interval(self, new_days: int):
         """Метод для UI: перепланирует задачу CMC."""

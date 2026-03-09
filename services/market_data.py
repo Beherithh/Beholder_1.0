@@ -3,7 +3,7 @@ import ccxt.async_support as ccxt
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict
 from loguru import logger
-from sqlmodel import select, desc
+from sqlmodel import select, desc, delete
 from database.models import MonitoredPair, MarketData
 from sqlalchemy.ext.asyncio import AsyncSession
 from services.config import ConfigService
@@ -106,6 +106,25 @@ class MarketDataService:
         except Exception as e:
             logger.error(f"Ошибка при обновлении {pair.exchange}:{pair.symbol} -> {e}")
             return 0
+
+    async def cleanup_old_market_data(self, days=180):
+        """
+        Удаляет свечи (MarketData) старше указанного количества дней.
+        Запускается планировщиком (по умолчанию раз в месяц).
+        """
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+            async with self.session_factory() as session:
+                stmt = delete(MarketData).where(MarketData.timestamp < cutoff)
+                result = await session.execute(stmt)
+                deleted_rows = result.rowcount
+                if deleted_rows > 0:
+                    await session.commit()
+                    logger.success(f"Обслуживание БД: очищено {deleted_rows} свечей старше {days} дней.")
+                else:
+                    logger.info("Обслуживание БД: старых свечей для удаления нет.")
+        except Exception as e:
+            logger.error(f"Ошибка при фоновой очистке БД: {e}")
 
     async def update_all(self):
         """
