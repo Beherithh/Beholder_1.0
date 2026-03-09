@@ -175,6 +175,10 @@ class BlogScraperService:
                             if all_a:
                                 sample_links = [a.get('href') for a in all_a[:5] if a.get('href')]
                                 logger.debug(f"[{ex_name}] Sample links on page: {sample_links}")
+                            del soup  # Освобождаем DOM-дерево BeautifulSoup (~2-5 МБ)
+                        
+                        # HTML листинга больше не нужен — освобождаем память
+                        del html
                         
                         for url, title in unique_links.items():
                             # 1. Проверяем заголовок и URL на наличие триггеров
@@ -217,6 +221,7 @@ class BlogScraperService:
                                 article_html = await self.web_scraper.fetch_html(url)
                                 
                             affected_tokens = self.article_parser.extract_pairs_from_html(article_html, url)
+                            del article_html  # Освобождаем HTML статьи
                             
                             if not affected_tokens:
                                 logger.warning(f"[{ex_name}] '{title}' - Pairs not found.")
