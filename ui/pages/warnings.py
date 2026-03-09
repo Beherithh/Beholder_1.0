@@ -32,7 +32,7 @@ def warnings_page():
         with ui.scroll_area().classes('w-full h-full bg-gray-900 rounded shadow-inner border border-gray-700'):
             log_container = ui.column().classes('w-full p-2 gap-1')
             
-        log_viewer = FilteredLogViewer(log_container, max_lines=500, levels=['WARNING'])
+        log_viewer = FilteredLogViewer(log_container, max_lines=150, levels=['WARNING'])
         log_viewer.set_counter('WARNING', warning_count)
         
         # Заполняем историей

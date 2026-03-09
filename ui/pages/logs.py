@@ -4,7 +4,7 @@ from ui.layout import create_header
 
 # Глобальный список для хранения последних логов
 LOG_BUFFER = []
-MAX_LOG_LINES = 1000
+MAX_LOG_LINES = 500
 active_log_elements = []
 
 class ReverseLog:
@@ -180,7 +180,7 @@ def logs_page():
         with ui.scroll_area().classes('w-full h-full bg-gray-900 rounded shadow-inner border border-gray-700'):
             log_container = ui.column().classes('w-full p-2 gap-1')
             
-        reverse_logger = ReverseLog(log_container, max_lines=1000)
+        reverse_logger = ReverseLog(log_container, max_lines=200)
         
         # Заполняем историей (фильтруем)
         for line in LOG_BUFFER:
