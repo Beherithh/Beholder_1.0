@@ -173,7 +173,7 @@ class ManualControlsPage:
                 with ui.row().classes('w-full items-center justify-between p-4 bg-gray-50 rounded border'):
                     with ui.column().classes('gap-1'):
                         ui.label('3. Проверка новостей (Delisting/ST)').classes('font-bold')
-                        ui.label('Запускает скраперы Gate.io/MEXC/Binance и API проверки').classes('text-xs text-gray-500')
+                        ui.label('Запускает скраперы Gate.io/MEXC/Binance/Kucoin и API проверки').classes('text-xs text-gray-500')
                     
                     btn_check = ui.button('Проверить риски', on_click=lambda: self.run_scraper_check(btn_check)).props('color=orange dense size=md icon=bug_report')
 
