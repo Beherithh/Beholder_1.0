@@ -1,4 +1,5 @@
 import httpx
+from datetime import datetime
 from loguru import logger
 from sqlmodel import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -165,6 +166,19 @@ class ApiRiskCheckerService:
                                 existing_event.announcement_title = event_title
                                 session.add(existing_event)
                                 changes_detected = True
+                    else:
+                        # Если биржа сняла ST-теги (st_triggering_pairs пуст), но в БД есть "API" запись — удаляем её,
+                        # чтобы при передобавлении пары match_monitored_pairs_with_events не присваивал ложный риск.
+                        stmt = delete(DelistingEvent).where(
+                            DelistingEvent.exchange == ex_name,
+                            DelistingEvent.symbol == base_currency,
+                            DelistingEvent.announcement_url == source_cfg.get("url", "API"),
+                            DelistingEvent.type == DelistingEventType.ST
+                        )
+                        result = await session.execute(stmt)
+                        if result.rowcount > 0:
+                            changes_detected = True
+                            logger.info(f"[{ex_name}] API ST status removed for ticker {base_currency}, deleting database event.")
 
                 # --- B. Recovery Logic (Unique to API) ---
                 native_ticker_pairs = all_api_data.get(current_ex, {}).get(base_currency, [])
