@@ -54,4 +54,4 @@ app.on_startup(startup)
 app.on_shutdown(shutdown)
 
 if __name__ in {"__main__", "__mp_main__"}:
-    ui.run(title='Beholder Dashboard', port=8080, reload=False, show=False)
+    ui.run(title='Beholder Dashboard', port=8080, reload=False, show=False, fastapi_docs=False)
