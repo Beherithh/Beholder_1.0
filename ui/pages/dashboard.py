@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any
 
 from sqlmodel import select
+from sqlalchemy import func
 from nicegui import ui
 
 from database.core import get_session
@@ -45,6 +46,39 @@ async def get_dashboard_data() -> Dict[str, Any]:
             elif sig.type == SignalType.VOLUME_ALERT:
                 if sig.pair_id: volume_alerts_map[sig.pair_id] = sig.raw_message
 
+        # BATCH 1: Последние цены для ВСЕХ пар — один запрос вместо N.
+        # Подзапрос: находит самый свежий timestamp для каждого pair_id.
+        latest_ts_subq = (
+            select(
+                MarketData.pair_id,
+                func.max(MarketData.timestamp).label("max_ts")
+            )
+            .group_by(MarketData.pair_id)
+            .subquery()
+        )
+        # Джойним с MarketData, чтобы достать close и timestamp одним запросом.
+        latest_prices_rows = (await session.execute(
+            select(MarketData.pair_id, MarketData.close, MarketData.timestamp)
+            .join(latest_ts_subq,
+                  (MarketData.pair_id == latest_ts_subq.c.pair_id) &
+                  (MarketData.timestamp == latest_ts_subq.c.max_ts))
+        )).all()
+        # Карта: {pair_id: (close, timestamp)} — O(1) доступ в цикле
+        price_map = {row.pair_id: (row.close, row.timestamp) for row in latest_prices_rows}
+
+        # BATCH 2: События делистинга для рисковых пар — один запрос вместо N.
+        risky_bases = list({p.base_currency for p in pairs if p.risk_level != RiskLevel.NORMAL})
+        events_map: Dict[str, str] = {}  # {symbol: announcement_url}
+        if risky_bases:
+            events_rows = (await session.execute(
+                select(DelistingEvent)
+                .where(DelistingEvent.symbol.in_(risky_bases))
+                .order_by(DelistingEvent.found_at.desc())
+            )).scalars().all()
+            for ev in events_rows:
+                if ev.symbol not in events_map:  # берём первый (самый свежий)
+                    events_map[ev.symbol] = ev.announcement_url
+
         for pair in pairs:
             # Статистика
             if pair.risk_level == RiskLevel.DELISTING_PLANNED:
@@ -52,27 +86,18 @@ async def get_dashboard_data() -> Dict[str, Any]:
             elif pair.risk_level != RiskLevel.NORMAL:
                 stats["risk"] += 1
 
-            # Ищем последнюю цену
-            price_stmt = select(MarketData).where(MarketData.pair_id == pair.id).order_by(MarketData.timestamp.desc()).limit(1)
-            last_price = (await session.execute(price_stmt)).scalar_one_or_none()
+            # Последняя цена — из предзагруженной карты (O(1))
+            price_data = price_map.get(pair.id)
+            price_val = price_data[0] if price_data else 0.0
+            updated_at = price_data[1].strftime("%d.%m %H:%M") if price_data else "—"
             
             # Распаковка labels — используем property модели
             labels_str = pair.labels_display
-
-            price_val = last_price.close if last_price else 0.0
-            updated_at = last_price.timestamp.strftime("%d.%m %H:%M") if last_price else "—"
             
-            # Поиск ссылки на статью для рисковых статусов
+            # Ссылка на статью — из предзагруженной карты (O(1))
             announcement_url = None
             if pair.risk_level != RiskLevel.NORMAL:
-                base_currency = pair.base_currency
-                event_stmt = select(DelistingEvent).where(
-                    DelistingEvent.symbol == base_currency
-                ).order_by(DelistingEvent.found_at.desc()).limit(1)
-                
-                event = (await session.execute(event_stmt)).scalar_one_or_none()
-                if event:
-                    announcement_url = event.announcement_url
+                announcement_url = events_map.get(pair.base_currency)
 
             # Цвета для статуса риска
             risk_color = "text-gray-400"
