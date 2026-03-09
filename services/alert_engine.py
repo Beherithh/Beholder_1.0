@@ -28,14 +28,23 @@ class AlertEngine:
     async def analyze_all(self, config: AlertConfig, rates: Dict[str, float]):
         """
         Проверка условий алертов изменения цен и объёма для всех активных пар.
+        Каждая пара обрабатывается в отдельной DB-сессии, чтобы Identity Map
+        (внутренний кэш SQLAlchemy) не накапливал все загруженные MarketData-объекты.
         """
         logger.info("AlertEngine: Запуск анализа рыночных данных на алерты...")
         
+        # 1. Загружаем список пар в отдельной сессии (закроется сразу).
+        #    expire_on_commit=False гарантирует, что атрибуты пар (id, symbol и т.д.)
+        #    останутся доступны после закрытия сессии.
         async with self.session_factory() as session:
             result = await session.execute(select(MonitoredPair).where(MonitoredPair.monitoring_status == "active"))
             pairs = result.scalars().all()
 
-            for pair in pairs:
+        # 2. Анализируем каждую пару в своей сессии.
+        #    После закрытия сессии GC освобождает все MarketData-объекты,
+        #    загруженные при анализе этой пары (~720 свечей × 4 проверки).
+        for pair in pairs:
+            async with self.session_factory() as session:
                 await self.analyze_pair(session, pair, config, rates)
 
         logger.info("AlertEngine: Анализ price/volume завершен.")
