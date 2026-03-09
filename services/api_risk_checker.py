@@ -91,6 +91,8 @@ class ApiRiskCheckerService:
                             continue
                         
                         # Build Normalize Map
+                        # Вычисляем is_st сразу — храним один bool вместо полного dict API.
+                        st_key = source.get("st_key", "st")
                         for item in items:
                             symbol_key = source.get("symbol_key", "symbol")
                             raw_symbol = item.get(symbol_key, "")
@@ -100,6 +102,11 @@ class ApiRiskCheckerService:
                             # Нормализуем к формату БД: BTC/USDT
                             normalized = normalize_symbol(raw_symbol)
                             
+                            # Проверяем ST-статус сразу при парсинге (DRY)
+                            st_value = item.get(st_key)
+                            is_st = (st_value is True or str(st_value).lower() == "true"
+                                     or st_value == 1 or st_value == "1")
+                            
                             # Группируем данные по базовой валюте
                             base_currency = normalized.split('/')[0].upper() if '/' in normalized else normalized.upper()
                             if base_currency not in all_api_data[ex_name]:
@@ -107,7 +114,7 @@ class ApiRiskCheckerService:
                             
                             all_api_data[ex_name][base_currency].append({
                                 "symbol": normalized.upper(),
-                                "item": item
+                                "is_st": is_st  # bool вместо полного dict (~500 байт → 1 байт)
                             })
                             
                     except Exception as api_err:
@@ -125,14 +132,9 @@ class ApiRiskCheckerService:
                     
                     st_triggering_pairs = []
                     source_cfg = next((s for s in self.API_SOURCES if s["name"] == ex_name), {})
-                    st_key = source_cfg.get("st_key", "st")
                     
                     for entry in ticker_pairs:
-                        api_item = entry["item"]
-                        st_value = api_item.get(st_key)
-                        is_risk = (st_value == True or str(st_value).lower() == "true" or st_value == 1 or st_value == "1")
-                        
-                        if is_risk:
+                        if entry["is_st"]:
                             st_triggering_pairs.append(entry["symbol"])
                     
                     if st_triggering_pairs:
@@ -167,15 +169,7 @@ class ApiRiskCheckerService:
                 # --- B. Recovery Logic (Unique to API) ---
                 native_ticker_pairs = all_api_data.get(current_ex, {}).get(base_currency, [])
                 if native_ticker_pairs and pair.risk_level == RiskLevel.RISK_ZONE:
-                    source_cfg = next((s for s in self.API_SOURCES if s["name"] == current_ex), {})
-                    st_key = source_cfg.get("st_key", "st")
-                    
-                    any_st_active = False
-                    for entry in native_ticker_pairs:
-                        st_value = entry["item"].get(st_key)
-                        if (st_value == True or str(st_value).lower() == "true" or st_value == 1 or st_value == "1"):
-                            any_st_active = True
-                            break
+                    any_st_active = any(entry["is_st"] for entry in native_ticker_pairs)
                     
                     if not any_st_active:
                         pair.risk_level = RiskLevel.NORMAL
