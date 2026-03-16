@@ -1,6 +1,33 @@
 import os
 import sys
+import logging
 from loguru import logger
+
+
+class InterceptHandler(logging.Handler):
+    """
+    Перехватчик стандартного logging → Loguru.
+    Uvicorn, Starlette, NiceGUI используют стандартный logging,
+    который без этого обработчика НЕ попадает в наши Loguru файлы.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        # Находим соответствующий уровень Loguru
+        try:
+            level: str | int = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+
+        # Ищем реальный источник вызова, минуя стек logging
+        frame, depth = sys._getframe(6), 6
+        while frame and frame.f_code.co_filename == logging.__file__:
+            frame = frame.f_back  # type: ignore[assignment]
+            depth += 1
+
+        logger.opt(depth=depth, exception=record.exc_info).log(
+            level, record.getMessage()
+        )
+
 
 # Флаг, чтобы избежать повторной инициализации
 is_initialized = False
@@ -44,20 +71,28 @@ def init_logging():
         encoding="utf-8"
     )
 
-    # 4. Обработчики для UI (импортируем их здесь, чтобы избежать циклических зависимостей)
+    # 4. Перехватываем стандартный logging (Uvicorn, Starlette, NiceGUI)
+    # Без этого сообщения "NiceGUI ready to go" не попадают в файл при запуске как служба
+    logging.basicConfig(handlers=[InterceptHandler()], level=logging.INFO, force=True)
+    # Явно указываем логгеры Uvicorn (на случай если они добавляют свои хендлеры)
+    for uvicorn_logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        uv_log = logging.getLogger(uvicorn_logger_name)
+        uv_log.handlers = [InterceptHandler()]
+        uv_log.propagate = False
+
+    # 5. Обработчики для UI (импортируем их здесь, чтобы избежать циклических зависимостей)
     from ui.pages.logs import broadcast_log
     from ui.pages.errors import broadcast_error_log
     from ui.pages.warnings import broadcast_warning_log
 
-    # 4.1. Общий лог для UI
+    # 5.1. Общий лог для UI
     logger.add(broadcast_log, format="{message}", level="INFO")
     
-    # 4.2. Лог ошибок для UI
+    # 5.2. Лог ошибок для UI
     logger.add(broadcast_error_log, format="{message}", level="ERROR")
     
-    # 4.3. Лог предупреждений для UI (фильтруем, чтобы не дублировать ошибки)
+    # 5.3. Лог предупреждений для UI (фильтруем, чтобы не дублировать ошибки)
     logger.add(broadcast_warning_log, format="{message}", level="WARNING", filter=lambda r: r["level"].name == "WARNING")
 
     is_initialized = True
     logger.info("Logging system initialized.")
-
