@@ -43,6 +43,7 @@ async def startup():
     await services.scheduler.schedule_all()
     
     logger.info("Система Beholder запущена.")
+    logger.success("Сервер доступен по адресу: http://127.0.0.1:8080")
 
 async def shutdown():
     logger.info("Система Beholder останавливается...")
