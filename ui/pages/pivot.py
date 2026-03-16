@@ -7,6 +7,57 @@ from database.core import get_session
 from database.models import MonitoredPair, MonitoringStatus
 from ui.layout import create_header
 
+
+def build_export_tsv(label_coins: Dict[str, List[str]]) -> str:
+    """
+    Преобразует словарь {label: [coins]} в TSV-строку для вставки в Excel.
+    Каждая колонка (метка) сортируется независимо по алфавиту.
+    Строки дополняются пустыми ячейками, если колонки разной длины.
+    """
+    labels = sorted(label_coins.keys())
+
+    # Каждая колонка — свой отсортированный список
+    sorted_cols: List[List[str]] = [sorted(label_coins[lbl]) for lbl in labels]
+
+    max_rows = max((len(col) for col in sorted_cols), default=0)
+
+    lines: List[str] = []
+    # Шапка: хедер с названиями меток
+    lines.append('\t'.join(labels))
+    # Строки данных
+    for i in range(max_rows):
+        row = [col[i] if i < len(col) else '' for col in sorted_cols]
+        lines.append('\t'.join(row))
+
+    return '\n'.join(lines)
+
+
+async def get_label_coins() -> Dict[str, List[str]]:
+    """
+    Возвращает словарь {source_label: [уникальные базовые валюты]} для активных пар.
+    """
+    async with get_session() as session:
+        stmt = select(MonitoredPair).where(MonitoredPair.monitoring_status == MonitoringStatus.ACTIVE)
+        pairs = (await session.execute(stmt)).scalars().all()
+
+    result: Dict[str, set] = {}
+    for pair in pairs:
+        if not pair.source_label:
+            continue
+        try:
+            labels = json.loads(pair.source_label)
+            labels = labels if isinstance(labels, list) else [str(labels)]
+        except (json.JSONDecodeError, TypeError):
+            labels = [pair.source_label]
+
+        base = pair.base_currency
+        for lbl in labels:
+            result.setdefault(lbl, set()).add(base)
+
+    # Преобразуем set → list для сериализации
+    return {lbl: list(coins) for lbl, coins in result.items()}
+
+
 async def get_pivot_data() -> List[Dict[str, Any]]:
     """
     Агрегирует данные из БД по названию монеты.
@@ -63,7 +114,25 @@ async def pivot_page():
     with ui.column().classes('w-full p-4 bg-gray-50 min-h-screen gap-4'):
         with ui.row().classes('w-full items-center justify-between'):
             ui.label('Pivot Table').classes('text-2xl font-bold')
-            ui.button('Обновить', icon='refresh', on_click=lambda: ui.navigate.to('/pivot')).props('outline')
+            with ui.row().classes('gap-2'):
+                async def copy_to_clipboard():
+                    """Генерирует TSV и копирует его в буфер обмена через JS."""
+                    label_coins = await get_label_coins()
+                    tsv = build_export_tsv(label_coins)
+                    # Экранируем секретный textarea, пишем, копируем, убираем
+                    escaped = tsv.replace('`', '\\`').replace('$', '\\$')
+                    await ui.run_javascript(f"""
+                        const el = document.createElement('textarea');
+                        el.value = `{escaped}`;
+                        document.body.appendChild(el);
+                        el.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(el);
+                    """)
+                    ui.notify('Таблица скопирована! Вставьте в Excel (Ctrl+V)', type='positive', position='top')
+
+                ui.button('Скопировать для Excel', icon='content_copy', on_click=copy_to_clipboard).props('outline color=green')
+                ui.button('Обновить', icon='refresh', on_click=lambda: ui.navigate.to('/pivot')).props('outline')
         
         columns = [
             {'name': 'coin', 'label': 'Монета', 'field': 'coin', 'align': 'left', 'sortable': True},
