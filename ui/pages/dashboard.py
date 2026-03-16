@@ -279,7 +279,7 @@ async def dashboard_page():
             columns = [
                 {'name': 'exchange', 'label': 'Биржа', 'field': 'exchange', 'align': 'left', 'sortable': True},
                 {'name': 'symbol', 'label': 'Пара', 'field': 'symbol', 'align': 'left', 'sortable': True},
-                {'name': 'rank', 'label': '#', 'field': 'rank', 'align': 'center', 'sortable': True},
+                {'name': 'rank', 'label': 'CMC Rank', 'field': 'rank', 'align': 'center', 'sortable': True},
                 {'name': 'price', 'label': 'Цена', 'field': 'price', 'align': 'right', 'sortable': True},
                 {'name': 'risk_level', 'label': 'Статус', 'field': 'risk_level', 'align': 'center', 'sortable': True},
                 {'name': 'price_alert_msg', 'label': '📈', 'field': 'price_alert_msg', 'align': 'center', 'sortable': True},
