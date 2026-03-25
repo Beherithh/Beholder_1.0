@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any
 
@@ -8,6 +9,27 @@ from nicegui import ui
 from database.core import get_session
 from database.models import MonitoredPair, MarketData, RiskLevel, MonitoringStatus, DelistingEvent, Signal, SignalType, AppSettings
 from ui.layout import create_header
+
+
+def _parse_volume_avg(raw_message: str | None) -> int:
+    """Извлекает средний дневной объём (int) из raw_message алерта.
+
+    Ищет строку вида 'Last 30 days: <b>1,234</b> USDT/day'
+    и возвращает числовое значение как int (для сортировки в таблице).
+    Если алерта нет или парсинг не удался — возвращает -1.
+    """
+    if not raw_message:
+        return -1
+    # Ищем: 'Last <N> days:' -> опционально <b> -> число (может содержать запятые) -> опционально </b>
+    match = re.search(
+        r'Last\s+\d+\s+days:\s*(?:<b>)?\s*([\d,]+)\s*(?:</b>)?',
+        raw_message,
+    )
+    if not match:
+        return -1
+    # Убираем запятые-разделители тысяч и приводим к int
+    return int(match.group(1).replace(',', ''))
+
 
 async def get_dashboard_data() -> Dict[str, Any]:
     """
@@ -111,6 +133,7 @@ async def get_dashboard_data() -> Dict[str, Any]:
             # Алерты
             price_alert_msg = price_alerts_map.get(pair.id)
             volume_alert_msg = volume_alerts_map.get(pair.id)
+            volume_avg = _parse_volume_avg(volume_alert_msg)
 
             # Rank Logic
             rank_val = pair.cmc_rank
@@ -139,7 +162,8 @@ async def get_dashboard_data() -> Dict[str, Any]:
                 "updated": updated_at,
                 "tv_url": f"https://www.tradingview.com/chart/?symbol={pair.exchange.upper()}:{pair.symbol.replace('/', '')}",
                 "price_alert_msg": price_alert_msg,
-                "volume_alert_msg": volume_alert_msg
+                "volume_alert_msg": volume_alert_msg,
+                "volume_avg": volume_avg
             })
         
         return {"rows": data_rows, "stats": stats}
@@ -283,7 +307,7 @@ async def dashboard_page():
                 {'name': 'price', 'label': 'Цена', 'field': 'price', 'align': 'right', 'sortable': True},
                 {'name': 'risk_level', 'label': 'Статус', 'field': 'risk_level', 'align': 'center', 'sortable': True},
                 {'name': 'price_alert_msg', 'label': '📈', 'field': 'price_alert_msg', 'align': 'center', 'sortable': True},
-                {'name': 'volume_alert_msg', 'label': '📊', 'field': 'volume_alert_msg', 'align': 'center', 'sortable': True},
+                {'name': 'volume_avg', 'label': '📊', 'field': 'volume_avg', 'align': 'center', 'sortable': True},
                 {'name': 'labels_count', 'label': 'Списков', 'field': 'labels_count', 'align': 'center', 'sortable': True},
                 {'name': 'labels', 'label': 'Метки файлов', 'field': 'labels', 'align': 'left', 'sortable': True},
                 {'name': 'tv_url', 'label': 'ТВ', 'field': 'tv_url', 'align': 'center'},
@@ -337,11 +361,12 @@ async def dashboard_page():
                 </q-td>
             ''')
 
-            table_ref.add_slot('body-cell-volume_alert_msg', '''
+            table_ref.add_slot('body-cell-volume_avg', '''
                 <q-td :props="props">
-                    <q-icon v-if="props.value" name="warning" color="purple" size="sm">
-                        <q-tooltip class="bg-black text-body2 break-words max-w-xs">{{ props.value }}</q-tooltip>
-                    </q-icon>
+                    <span v-if="props.value >= 0" class="text-purple-700 font-bold cursor-pointer">
+                        {{ props.value.toLocaleString() }}
+                        <q-tooltip class="bg-black text-body2 break-words max-w-xs">{{ props.row.volume_alert_msg }}</q-tooltip>
+                    </span>
                     <span v-else class="text-gray-300">—</span>
                 </q-td>
             ''')
