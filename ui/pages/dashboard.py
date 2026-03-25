@@ -135,11 +135,10 @@ async def get_dashboard_data() -> Dict[str, Any]:
             volume_alert_msg = volume_alerts_map.get(pair.id)
             volume_avg = _parse_volume_avg(volume_alert_msg)
 
-            # Rank Logic
-            rank_val = pair.cmc_rank
-            rank_display = str(rank_val) if rank_val else "—"
+            # Rank Logic: храним int для корректной сортировки (-1 = нет данных)
+            rank_val = pair.cmc_rank or -1
             rank_color = "text-gray-400"
-            if rank_val:
+            if rank_val > 0:
                 if rank_val <= 100:
                     rank_color = "text-green-600 font-bold"
                 elif rank_val > rank_threshold:
@@ -152,7 +151,7 @@ async def get_dashboard_data() -> Dict[str, Any]:
                 "exchange": pair.exchange,
                 "symbol": pair.symbol,
                 "price": f"{price_val:.8f}".rstrip('0').rstrip('.') if price_val > 0 else "N/A",
-                "rank": rank_display,
+                "rank": rank_val,
                 "rank_color": rank_color,
                 "risk_level": pair.risk_level.value.upper().replace("_", " "),
                 "risk_color": risk_color,
@@ -338,7 +337,8 @@ async def dashboard_page():
 
             table_ref.add_slot('body-cell-rank', '''
                 <q-td :props="props">
-                    <span :class="props.row.rank_color">{{ props.value }}</span>
+                    <span v-if="props.value > 0" :class="props.row.rank_color">{{ props.value }}</span>
+                    <span v-else class="text-gray-300">—</span>
                 </q-td>
             ''')
 
