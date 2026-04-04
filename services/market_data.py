@@ -47,6 +47,10 @@ class MarketDataService:
         try:
             last_time = await self._get_last_candle_time(session, pair.id)
             logger.info(f"[{pair.exchange}] Начинаем догрузку {pair.symbol} с {last_time}...")
+            
+            # Определяем начало текущего часа (UTC), чтобы не записывать неполную свечу
+            now = datetime.now(timezone.utc)
+            current_candle_start = now.replace(minute=0, second=0, microsecond=0)
 
             while True:
                 # CCXT требует timestamp в миллисекундах
@@ -55,8 +59,15 @@ class MarketDataService:
                 candles = await exchange.fetch_ohlcv(pair.symbol, timeframe='1h', since=since)
                 
                 if not candles:
-                    # Если биржа вернула пустой список, значит, мы все скачали
-                    break
+                    # Если биржа вернула пустой список, но мы еще далеко в прошлом (> 1 дня до 'сейчас')
+                    # значит, торги по этой монете еще не начались в запрашиваемый период.
+                    if (now - last_time) > timedelta(days=1):
+                        # "Прыгаем" вперед на 1 день, чтобы быстрее найти дату листинга
+                        last_time += timedelta(days=1)
+                        continue
+                    else:
+                        # Мы уже близко к настоящему времени, данных действительно нет -> выходим
+                        break
 
                 new_market_data = []
                 
@@ -66,6 +77,10 @@ class MarketDataService:
                     
                     # Защита от дублей: если свеча совпадает с last_time, пропускаем
                     if candle_time <= last_time:
+                        continue
+                    
+                    # Игнорируем текущую (незавершенную) свечу
+                    if candle_time >= current_candle_start:
                         continue
                         
                     new_market_data.append(MarketData(
@@ -78,15 +93,15 @@ class MarketDataService:
                 
                 if new_count_in_batch == 0:
                     # Если мы обработали пачку, но не нашли ни одной новой свечи
-                    # (например, все были дубликатами), выходим из цикла.
+                    # (например, все были дубликатами или текущая незавершенная), выходим из цикла.
                     break
 
                 session.add_all(new_market_data)
                 total_new_candles += new_count_in_batch
                 
-                # Обновляем last_time для следующей итерации
-                last_candle_in_batch_ts = candles[-1][0]
-                last_time = datetime.fromtimestamp(last_candle_in_batch_ts / 1000, tz=timezone.utc)
+                # Обновляем last_time по последней РЕАЛЬНО ЗАПИСАННОЙ свече, 
+                # чтобы не "перепрыгнуть" незавершенную свечу при следующем запуске.
+                last_time = new_market_data[-1].timestamp
                 
                 logger.info(f"[{pair.exchange}] ...загружено {new_count_in_batch} свечей, последняя: {last_time}")
 

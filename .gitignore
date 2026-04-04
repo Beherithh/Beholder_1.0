@@ -60,3 +60,7 @@ data_flow.png
 
 gate.html
 gate_article.html
+/check_tables.py
+/Check_XEM.py
+/compare_beholders.py
+/tools/get_gate_volume.py
