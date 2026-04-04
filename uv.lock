@@ -241,7 +241,7 @@ requires-dist = [
     { name = "aiosqlite", specifier = ">=0.19.0" },
     { name = "apscheduler", specifier = ">=3.10.0" },
     { name = "beautifulsoup4", specifier = ">=4.14.3" },
-    { name = "ccxt", specifier = ">=4.0.0" },
+    { name = "ccxt", specifier = "==4.5.46" },
     { name = "cryptography", specifier = ">=46.0.3" },
     { name = "curl-cffi", specifier = ">=0.14.0" },
     { name = "httpx", specifier = ">=0.26.0" },
@@ -269,7 +269,7 @@ wheels = [
 
 [[package]]
 name = "ccxt"
-version = "4.5.27"
+version = "4.5.46"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiodns" },
@@ -282,9 +282,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "yarl" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4b/f4/6ea1c3b6f3b65f04f0fec5ae3aaf1eb256f9da3b6714430d042ea0bf06d9/ccxt-4.5.27.tar.gz", hash = "sha256:6fd259ff2bd3fe3e7dbac8861a7e18e1f2a617bb35e29074d9962e4a7a614357", size = 5716070, upload-time = "2025-12-12T13:13:20.89Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/71/48/9963d571160d6b742f74a73739467ccd0dd263e5ed9157e40b145fc2438a/ccxt-4.5.46.tar.gz", hash = "sha256:b863a1cff5e166d288858455b60c17b604df3fb86816491b15aea17ea5e10e37", size = 6020223, upload-time = "2026-03-31T11:33:04.196Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/14/ab/ee2a8b3e01686fe97fa0e15be4057dda80df091cceac43c439f48282d9b7/ccxt-4.5.27-py2.py3-none-any.whl", hash = "sha256:a18e73627c829d04da4c215ecded18d0c49b77dd259f3c94a5896055e9d6cf9d", size = 6182804, upload-time = "2025-12-12T13:13:18.046Z" },
+    { url = "https://files.pythonhosted.org/packages/05/81/5928b995514d4b4ab1f870b907c45b826a1863c897574c7d29e56d9da4f9/ccxt-4.5.46-py2.py3-none-any.whl", hash = "sha256:3b8f53eb0cdcfb8f393cf697dd701925bba276733cc7f16c2b5ca3c2028bc583", size = 6516304, upload-time = "2026-03-31T11:33:00.811Z" },
 ]
 
 [[package]]
