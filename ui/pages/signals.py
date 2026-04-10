@@ -19,15 +19,29 @@ class SignalsPage:
         self.full_rows = []
         self.table = None
 
-    async def load_signals(self):
-        """Загрузка последних 100 сигналов из БД"""
+    async def load_signals(self, search_query: str = "") -> None:
+        """Загрузка сигналов из БД.
+
+        Если search_query задан — ищем по символу пары без лимита (полная история).
+        Иначе — возвращаем последние 100 записей.
+
+        Args:
+            search_query: тикер или часть символа для фильтрации, например 'XRP'.
+        """
         async with get_session() as session:
             statement = (
                 select(Signal, MonitoredPair)
                 .join(MonitoredPair, Signal.pair_id == MonitoredPair.id, isouter=True)
                 .order_by(desc(Signal.created_at))
-                .limit(100)
             )
+            if search_query.strip():
+                # Серверная фильтрация: ищем по символу пары без лимита
+                pattern = f"%{search_query.strip().upper()}%"
+                statement = statement.where(MonitoredPair.symbol.like(pattern))
+            else:
+                # Стандартный режим: только последние 100
+                statement = statement.limit(100)
+
             result = await session.execute(statement)
             self.signals = result.all()
 
@@ -121,15 +135,19 @@ class SignalsPage:
         }
         return styles.get(sig_type, 'bg-gray-100 text-gray-800')
 
-    async def refresh_table(self):
-        """Перезагрузка данных в таблицу"""
-        await self.load_signals()
-        
+    async def refresh_table(self, search_query: str = "") -> None:
+        """Перезагрузка данных в таблицу.
+
+        Args:
+            search_query: если передан — выполняется серверный поиск по символу без лимита.
+        """
+        await self.load_signals(search_query=search_query)
+
         self.full_rows = []
         for s, p in self.signals:
             url_match = re.search(r'https?://[^\s]+', s.raw_message)
             announcement_url = url_match.group(0) if url_match else None
-            
+
             self.full_rows.append({
                 'id': s.id,
                 'time': s.created_at.strftime('%Y-%m-%d %H:%M:%S'),
@@ -141,8 +159,7 @@ class SignalsPage:
                 'type_raw': s.type,
                 'announcement_url': announcement_url
             })
-            
-            
+
         if self.table:
             self.apply_filters()
 
@@ -171,7 +188,7 @@ class SignalsPage:
         for s, p in self.signals:
             url_match = re.search(r'https?://[^\s]+', s.raw_message)
             announcement_url = url_match.group(0) if url_match else None
-            
+
             self.full_rows.append({
                 'id': s.id,
                 'time': s.created_at.strftime('%Y-%m-%d %H:%M:%S'),
@@ -184,38 +201,73 @@ class SignalsPage:
                 'announcement_url': announcement_url
             })
 
-        async def refresh_and_filter():
-            await self.refresh_table()
-            exchanges = ['Все'] + sorted(list(set(r['exchange'] for r in self.full_rows if r['exchange'] != '-')))
-            types = ['Все'] + sorted(list(set(r['type'] for r in self.full_rows)))
+        async def do_server_search() -> None:
+            """Серверный поиск по тикеру — срабатывает по Enter или кнопке."""
+            query = ticker_input.value or ""
+            await self.refresh_table(search_query=query)
+            # Обновляем выпадающие списки фильтров под новые данные
+            exchanges = ['Все'] + sorted(set(r['exchange'] for r in self.full_rows if r['exchange'] != '-'))
+            types = ['Все'] + sorted(set(r['type'] for r in self.full_rows))
             ex_select.options = exchanges
             ex_select.update()
             type_select.options = types
             type_select.update()
             self.apply_filters()
+            # Обновляем метку режима
+            if query.strip():
+                mode_label.set_text(f'Найдено по запросу "{query.upper()}": {len(self.full_rows)} записей (вся история)')
+            else:
+                mode_label.set_text('Режим: последние 100 сигналов')
             ui.notify('Сигналы обновлены', type='info')
-            
-        async def handle_resolve_event(signal_id):
+
+        async def refresh_and_filter() -> None:
+            """Обновление без изменения поискового запроса."""
+            await do_server_search()
+
+        async def handle_resolve_event(signal_id: int) -> None:
             await self.resolve_risk_event(signal_id)
 
         with ui.card().classes('w-full max-w-6xl mx-auto p-4'):
             with ui.row().classes('w-full justify-between items-center mb-4'):
-                ui.label('История сигналов (последние 100)').classes('text-2xl font-bold')
+                ui.label('История сигналов').classes('text-2xl font-bold')
                 ui.button(icon='refresh', on_click=refresh_and_filter).props('flat dense')
 
-            initial_exchanges = ['Все'] + sorted(list(set(r['exchange'] for r in self.full_rows if r['exchange'] != '-')))
+            # --- Поиск по тикеру (серверный, без лимита) ---
+            with ui.row().classes('w-full gap-2 items-center mb-2'):
+                ticker_input = (
+                    ui.input(
+                        placeholder='Тикер для поиска по всей истории (напр. XRP)...',
+                        on_change=None,  # только Enter / кнопка
+                    )
+                    .classes('flex-grow')
+                    .props('dense outlined clearable')
+                )
+                # Enter в поле запускает серверный поиск
+                ticker_input.on('keydown.enter', do_server_search)
+                ui.button(icon='search', on_click=do_server_search).props('dense').tooltip('Искать по всей истории')
+
+            # Метка-подсказка о текущем режиме
+            mode_label = ui.label('Режим: последние 100 сигналов').classes('text-xs text-gray-500 mb-2')
+
+            # --- Фильтры по загруженным данным (клиентские) ---
+            initial_exchanges = ['Все'] + sorted(set(r['exchange'] for r in self.full_rows if r['exchange'] != '-'))
             if GLOBAL_SIGNALS_FILTER_STATE['filter_exchange'] not in initial_exchanges:
                 initial_exchanges.append(GLOBAL_SIGNALS_FILTER_STATE['filter_exchange'])
-                
-            initial_types = ['Все'] + sorted(list(set(r['type'] for r in self.full_rows)))
+
+            initial_types = ['Все'] + sorted(set(r['type'] for r in self.full_rows))
             if GLOBAL_SIGNALS_FILTER_STATE['filter_type'] not in initial_types:
                 initial_types.append(GLOBAL_SIGNALS_FILTER_STATE['filter_type'])
 
             with ui.row().classes('w-full gap-2 items-center mb-4 wrap'):
-                search_input = ui.input(placeholder='Поиск пары / текста...', on_change=lambda e: self.apply_filters()).classes('w-48').props('dense outlined').bind_value(GLOBAL_SIGNALS_FILTER_STATE, 'search_text')
+                search_input = (  # noqa: F841  — используется только через bind_value
+                    ui.input(placeholder='Фильтр по паре / тексту в загруженных...', on_change=lambda e: self.apply_filters())
+                    .classes('w-56')
+                    .props('dense outlined')
+                    .bind_value(GLOBAL_SIGNALS_FILTER_STATE, 'search_text')
+                )
                 ex_select = ui.select(options=initial_exchanges, value=GLOBAL_SIGNALS_FILTER_STATE['filter_exchange'], label='Биржа', on_change=lambda e: self.apply_filters()).classes('w-32').props('dense outlined').bind_value(GLOBAL_SIGNALS_FILTER_STATE, 'filter_exchange')
                 type_select = ui.select(options=initial_types, value=GLOBAL_SIGNALS_FILTER_STATE['filter_type'], label='Тип алерта', on_change=lambda e: self.apply_filters()).classes('w-40').props('dense outlined').bind_value(GLOBAL_SIGNALS_FILTER_STATE, 'filter_type')
-                ui.button(icon='restart_alt', on_click=self.reset_filters).props('flat round dense')
+                ui.button(icon='restart_alt', on_click=self.reset_filters).props('flat round dense').tooltip('Сбросить клиентские фильтры')
 
             columns = [
                 {'name': 'time', 'label': 'Время', 'field': 'time', 'sortable': True, 'align': 'left'},
