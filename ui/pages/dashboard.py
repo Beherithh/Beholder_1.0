@@ -11,6 +11,45 @@ from database.models import MonitoredPair, MarketData, RiskLevel, MonitoringStat
 from ui.layout import create_header
 
 
+def _parse_pump_dump(raw_message: str | None) -> tuple[float, str]:
+    """Извлекает числовое значение % и метку периода из raw_message PRICE_CHANGE сигнала.
+
+    Формат сообщения:
+        '📈 PUMP <b>BTC/USDT</b> \nBinance: ...\n<b>+85%</b> Last 24 hours\nMin: ...'
+
+    Возвращает:
+        (abs_pct: float, period_label: str) — например (85.0, '24h') или (0.0, '') при ошибке.
+    """
+    if not raw_message:
+        return 0.0, ''
+    # Извлекаем процент: +85% или -35%
+    pct_match = re.search(r'([+-]?\d+(?:\.\d+)?)%', raw_message)
+    pct = abs(float(pct_match.group(1))) if pct_match else 0.0
+    # Извлекаем период: 'Last 24 hours' -> '24h' | 'Last 30 days' -> '30d'
+    period_match = re.search(r'Last\s+(\d+)\s+(hours|days)', raw_message, re.IGNORECASE)
+    if period_match:
+        num, unit = period_match.group(1), period_match.group(2).lower()
+        label = f"{num}{'h' if unit == 'hours' else 'd'}"
+    else:
+        label = ''
+    return pct, label
+
+
+def _best_signal(signals: list[str]) -> tuple[float, str, str]:
+    """Из списка raw_message сигналов одного направления (PUMP или DUMP)
+    выбирает тот, у которого максимальный % по модулю.
+
+    Возвращает:
+        (best_pct: float, period_label: str, raw_msg: str)
+    """
+    best_pct, best_label, best_msg = 0.0, '', ''
+    for msg in signals:
+        pct, label = _parse_pump_dump(msg)
+        if pct > best_pct:
+            best_pct, best_label, best_msg = pct, label, msg
+    return best_pct, best_label, best_msg
+
+
 def _parse_volume_avg(raw_message: str | None) -> int:
     """Извлекает средний дневной объём (int) из raw_message алерта.
 
@@ -59,12 +98,18 @@ async def get_dashboard_data() -> Dict[str, Any]:
         recent_signals = (await session.execute(signals_stmt)).scalars().all()
         
         # Группируем сигналы по pair_id
-        price_alerts_map = {}
-        volume_alerts_map = {}
-        
+        # pump_alerts_map / dump_alerts_map: {pair_id: [raw_message, ...]}
+        pump_alerts_map: dict[int, list[str]] = {}
+        dump_alerts_map: dict[int, list[str]] = {}
+        volume_alerts_map: dict[int, str] = {}
+
         for sig in recent_signals:
-            if sig.type == SignalType.PRICE_CHANGE:
-                if sig.pair_id: price_alerts_map[sig.pair_id] = sig.raw_message
+            if sig.type == SignalType.PRICE_CHANGE and sig.pair_id:
+                msg = sig.raw_message or ''
+                if 'PUMP' in msg:
+                    pump_alerts_map.setdefault(sig.pair_id, []).append(msg)
+                elif 'DUMP' in msg:
+                    dump_alerts_map.setdefault(sig.pair_id, []).append(msg)
             elif sig.type == SignalType.VOLUME_ALERT:
                 if sig.pair_id: volume_alerts_map[sig.pair_id] = sig.raw_message
 
@@ -130,8 +175,9 @@ async def get_dashboard_data() -> Dict[str, Any]:
             elif pair.risk_level in [RiskLevel.CROSS_RISK]:
                 risk_color = "text-yellow-600 font-medium"
 
-            # Алерты
-            price_alert_msg = price_alerts_map.get(pair.id)
+            # Алерты: pump / dump
+            pump_pct, pump_label, pump_msg = _best_signal(pump_alerts_map.get(pair.id, []))
+            dump_pct, dump_label, dump_msg = _best_signal(dump_alerts_map.get(pair.id, []))
             volume_alert_msg = volume_alerts_map.get(pair.id)
             volume_avg = _parse_volume_avg(volume_alert_msg)
 
@@ -160,7 +206,14 @@ async def get_dashboard_data() -> Dict[str, Any]:
                 "labels_count": len(labels_str.split(", ")) if labels_str != "Unknown" else 0,
                 "updated": updated_at,
                 "tv_url": f"https://www.tradingview.com/chart/?symbol={pair.exchange.upper()}:{pair.symbol.replace('/', '')}",
-                "price_alert_msg": price_alert_msg,
+                # Pump: числовое значение для сортировки, метка периода, полный текст
+                "pump_val": pump_pct,
+                "pump_label": pump_label,
+                "pump_msg": pump_msg,
+                # Dump: аналогично
+                "dump_val": dump_pct,
+                "dump_label": dump_label,
+                "dump_msg": dump_msg,
                 "volume_alert_msg": volume_alert_msg,
                 "volume_avg": volume_avg
             })
@@ -305,7 +358,8 @@ async def dashboard_page():
                 {'name': 'rank', 'label': 'CMC Rank', 'field': 'rank', 'align': 'center', 'sortable': True},
                 {'name': 'price', 'label': 'Цена', 'field': 'price', 'align': 'right', 'sortable': True},
                 {'name': 'risk_level', 'label': 'Статус', 'field': 'risk_level', 'align': 'center', 'sortable': True},
-                {'name': 'price_alert_msg', 'label': '📈', 'field': 'price_alert_msg', 'align': 'center', 'sortable': True},
+                {'name': 'pump_val', 'label': '🚀 Pump', 'field': 'pump_val', 'align': 'center', 'sortable': True},
+                {'name': 'dump_val', 'label': '💀 Dump', 'field': 'dump_val', 'align': 'center', 'sortable': True},
                 {'name': 'volume_avg', 'label': '📊', 'field': 'volume_avg', 'align': 'center', 'sortable': True},
                 {'name': 'labels_count', 'label': 'Списков', 'field': 'labels_count', 'align': 'center', 'sortable': True},
                 {'name': 'labels', 'label': 'Метки файлов', 'field': 'labels', 'align': 'left', 'sortable': True},
@@ -352,11 +406,28 @@ async def dashboard_page():
                 </q-td>
             ''')
 
-            table_ref.add_slot('body-cell-price_alert_msg', '''
+            table_ref.add_slot('body-cell-pump_val', '''
                 <q-td :props="props">
-                    <q-icon v-if="props.value" name="warning" color="orange" size="sm">
-                        <q-tooltip class="bg-black text-body2 break-words max-w-xs">{{ props.value }}</q-tooltip>
-                    </q-icon>
+                    <span v-if="props.value > 0"
+                          class="text-green-700 font-bold cursor-pointer"
+                    >
+                        +{{ props.value.toFixed(0) }}%
+                        <span class="text-xs text-green-500 ml-1">{{ props.row.pump_label }}</span>
+                        <q-tooltip class="bg-black text-body2 break-words max-w-xs" style="white-space:pre-line">{{ props.row.pump_msg }}</q-tooltip>
+                    </span>
+                    <span v-else class="text-gray-300">—</span>
+                </q-td>
+            ''')
+
+            table_ref.add_slot('body-cell-dump_val', '''
+                <q-td :props="props">
+                    <span v-if="props.value > 0"
+                          class="text-red-700 font-bold cursor-pointer"
+                    >
+                        -{{ props.value.toFixed(0) }}%
+                        <span class="text-xs text-red-400 ml-1">{{ props.row.dump_label }}</span>
+                        <q-tooltip class="bg-black text-body2 break-words max-w-xs" style="white-space:pre-line">{{ props.row.dump_msg }}</q-tooltip>
+                    </span>
                     <span v-else class="text-gray-300">—</span>
                 </q-td>
             ''')
