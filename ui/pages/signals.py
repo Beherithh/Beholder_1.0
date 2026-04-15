@@ -201,8 +201,12 @@ class SignalsPage:
                 'announcement_url': announcement_url
             })
 
-        async def do_server_search() -> None:
-            """Серверный поиск по тикеру — срабатывает по Enter или кнопке."""
+        async def do_server_search(*_) -> None:
+            """Серверный поиск по тикеру — срабатывает по Enter или кнопке.
+
+            Принимает *_ чтобы поглощать event-объект, который NiceGUI
+            передаёт в колбэки, зарегистрированные через .on() и on_click.
+            """
             query = ticker_input.value or ""
             await self.refresh_table(search_query=query)
             # Обновляем выпадающие списки фильтров под новые данные
@@ -220,7 +224,7 @@ class SignalsPage:
                 mode_label.set_text('Режим: последние 100 сигналов')
             ui.notify('Сигналы обновлены', type='info')
 
-        async def refresh_and_filter() -> None:
+        async def refresh_and_filter(*_) -> None:
             """Обновление без изменения поискового запроса."""
             await do_server_search()
 
@@ -242,7 +246,8 @@ class SignalsPage:
                     .classes('flex-grow')
                     .props('dense outlined clearable')
                 )
-                # Enter в поле запускает серверный поиск
+                # Enter в поле запускает серверный поиск.
+                # NiceGUI передаёт event-объект в on() — do_server_search принимает *_ и игнорирует его.
                 ticker_input.on('keydown.enter', do_server_search)
                 ui.button(icon='search', on_click=do_server_search).props('dense').tooltip('Искать по всей истории')
 
