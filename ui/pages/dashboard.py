@@ -90,11 +90,8 @@ async def get_dashboard_data() -> Dict[str, Any]:
         data_rows = []
         stats = {"total": len(pairs), "risk": 0, "delist": 0}
         
-        # Поиск недавних алертов для всех пар сразу (за последние 10 дней)
-        alerts_cutoff = datetime.now(timezone.utc) - timedelta(days=10)
-        
-        # Получаем все сигналы за период
-        signals_stmt = select(Signal).where(Signal.created_at >= alerts_cutoff)
+        # Получаем все актуальные сигналы (AlertEngine сам обновит или удалит неактивные)
+        signals_stmt = select(Signal)
         recent_signals = (await session.execute(signals_stmt)).scalars().all()
         
         # Группируем сигналы по pair_id
