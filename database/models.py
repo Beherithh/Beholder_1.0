@@ -69,6 +69,9 @@ class MonitoredPair(SQLModel, table=True):
     
     # CoinMarketCap Rank (для фильтрации мусора)
     cmc_rank: Optional[int] = Field(default=None)
+    
+    # Вариативность объема за 30 дней (CV), хранится в процентах (например, 153 -> 153%)
+    volume_cv: Optional[int] = Field(default=None)
 
     # Связи
     market_data: list["MarketData"] = Relationship(back_populates="pair")

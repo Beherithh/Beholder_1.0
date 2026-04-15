@@ -110,25 +110,19 @@ async def get_dashboard_data() -> Dict[str, Any]:
             elif sig.type == SignalType.VOLUME_ALERT:
                 if sig.pair_id: volume_alerts_map[sig.pair_id] = sig.raw_message
 
-        # BATCH 1: Последние цены для ВСЕХ пар — один запрос вместо N.
-        # Подзапрос: находит самый свежий timestamp для каждого pair_id.
-        latest_ts_subq = (
+        # BATCH 1: Последнее обновление свечей для ВСЕХ пар — один запрос.
+        # Группируем, чтобы найти самый свежий timestamp для каждого pair_id,
+        # так как сама цена закрытия (close) нам больше не нужна.
+        latest_ts_rows = (await session.execute(
             select(
                 MarketData.pair_id,
                 func.max(MarketData.timestamp).label("max_ts")
             )
             .group_by(MarketData.pair_id)
-            .subquery()
-        )
-        # Джойним с MarketData, чтобы достать close и timestamp одним запросом.
-        latest_prices_rows = (await session.execute(
-            select(MarketData.pair_id, MarketData.close, MarketData.timestamp)
-            .join(latest_ts_subq,
-                  (MarketData.pair_id == latest_ts_subq.c.pair_id) &
-                  (MarketData.timestamp == latest_ts_subq.c.max_ts))
         )).all()
-        # Карта: {pair_id: (close, timestamp)} — O(1) доступ в цикле
-        price_map = {row.pair_id: (row.close, row.timestamp) for row in latest_prices_rows}
+        
+        # Карта: {pair_id: timestamp} — O(1) доступ в цикле
+        timestamp_map = {row.pair_id: row.max_ts for row in latest_ts_rows}
 
         # BATCH 2: События делистинга для рисковых пар — один запрос вместо N.
         risky_bases = list({p.base_currency for p in pairs if p.risk_level != RiskLevel.NORMAL})
@@ -150,10 +144,9 @@ async def get_dashboard_data() -> Dict[str, Any]:
             elif pair.risk_level != RiskLevel.NORMAL:
                 stats["risk"] += 1
 
-            # Последняя цена — из предзагруженной карты (O(1))
-            price_data = price_map.get(pair.id)
-            price_val = price_data[0] if price_data else 0.0
-            updated_at = price_data[1].strftime("%d.%m %H:%M") if price_data else "—"
+            # Последнее время обновления — из предзагруженной карты (O(1))
+            last_ts = timestamp_map.get(pair.id)
+            updated_at = last_ts.strftime("%d.%m %H:%M") if last_ts else "—"
             
             # Распаковка labels — используем property модели
             labels_str = pair.labels_display
@@ -193,14 +186,12 @@ async def get_dashboard_data() -> Dict[str, Any]:
                 "id": pair.id,
                 "exchange": pair.exchange,
                 "symbol": pair.symbol,
-                "price": f"{price_val:.8f}".rstrip('0').rstrip('.') if price_val > 0 else "N/A",
                 "rank": rank_val,
                 "rank_color": rank_color,
                 "risk_level": pair.risk_level.value.upper().replace("_", " "),
                 "risk_color": risk_color,
                 "announcement_url": announcement_url,
                 "labels": labels_str,
-                "labels_count": len(labels_str.split(", ")) if labels_str != "Unknown" else 0,
                 "updated": updated_at,
                 "tv_url": f"https://www.tradingview.com/chart/?symbol={pair.exchange.upper()}:{pair.symbol.replace('/', '')}",
                 # Pump: числовое значение для сортировки, метка периода, полный текст
@@ -212,7 +203,8 @@ async def get_dashboard_data() -> Dict[str, Any]:
                 "dump_label": dump_label,
                 "dump_msg": dump_msg,
                 "volume_alert_msg": volume_alert_msg,
-                "volume_avg": volume_avg
+                "volume_avg": volume_avg,
+                "volume_cv": pair.volume_cv if pair.volume_cv is not None else -1
             })
         
         return {"rows": data_rows, "stats": stats}
@@ -353,12 +345,11 @@ async def dashboard_page():
                 {'name': 'exchange', 'label': 'Биржа', 'field': 'exchange', 'align': 'left', 'sortable': True},
                 {'name': 'symbol', 'label': 'Пара', 'field': 'symbol', 'align': 'left', 'sortable': True},
                 {'name': 'rank', 'label': 'CMC Rank', 'field': 'rank', 'align': 'center', 'sortable': True},
-                {'name': 'price', 'label': 'Цена', 'field': 'price', 'align': 'right', 'sortable': True},
                 {'name': 'risk_level', 'label': 'Статус', 'field': 'risk_level', 'align': 'center', 'sortable': True},
                 {'name': 'pump_val', 'label': '🚀 Pump', 'field': 'pump_val', 'align': 'center', 'sortable': True},
                 {'name': 'dump_val', 'label': '💀 Dump', 'field': 'dump_val', 'align': 'center', 'sortable': True},
                 {'name': 'volume_avg', 'label': '📊', 'field': 'volume_avg', 'align': 'center', 'sortable': True},
-                {'name': 'labels_count', 'label': 'Списков', 'field': 'labels_count', 'align': 'center', 'sortable': True},
+                {'name': 'volume_cv', 'label': 'VolVar', 'field': 'volume_cv', 'align': 'center', 'sortable': True},
                 {'name': 'labels', 'label': 'Метки файлов', 'field': 'labels', 'align': 'left', 'sortable': True},
                 {'name': 'tv_url', 'label': 'ТВ', 'field': 'tv_url', 'align': 'center'},
                 {'name': 'updated', 'label': 'Обновлено', 'field': 'updated', 'align': 'right'},
@@ -434,6 +425,16 @@ async def dashboard_page():
                     <span v-if="props.value >= 0" class="text-purple-700 font-bold cursor-pointer">
                         {{ props.value.toLocaleString() }}
                         <q-tooltip class="bg-black text-body2 break-words max-w-xs">{{ props.row.volume_alert_msg }}</q-tooltip>
+                    </span>
+                    <span v-else class="text-gray-300">—</span>
+                </q-td>
+            ''')
+
+            table_ref.add_slot('body-cell-volume_cv', '''
+                <q-td :props="props">
+                    <span v-if="props.value >= 0" class="text-indigo-700 font-bold">
+                        {{ props.value }}%
+                        <q-tooltip class="bg-black text-body2 break-words max-w-xs">Коэффициент вариации объема</q-tooltip>
                     </span>
                     <span v-else class="text-gray-300">—</span>
                 </q-td>

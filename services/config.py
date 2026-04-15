@@ -28,6 +28,7 @@ class AlertConfig(BaseModel):
     # Объем
     v_period: int = 30
     v_threshold: Optional[float] = None
+    v_cv_period: int = 30
 
 class CMCConfig(BaseModel):
     """DTO для настроек CoinMarketCap"""
@@ -109,6 +110,7 @@ class ConfigService:
                 d_pump_threshold=await self._get_float(session, "alert_price_days_pump_threshold"),
                 d_dump_threshold=await self._get_float(session, "alert_price_days_dump_threshold"),
                 v_threshold=await self._get_float(session, "alert_volume_days_threshold"),
+                v_cv_period=await self._get_int(session, "alert_volume_cv_period", default=30),
             )
 
     async def get_cmc_config(self) -> CMCConfig:

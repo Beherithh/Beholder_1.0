@@ -168,14 +168,57 @@ class AlertEngine:
                 await session.commit()
 
     async def _check_volume_alerts(self, session: AsyncSession, pair: MonitoredPair, config: AlertConfig, rates: dict):
-        """Проверка алертов по объему"""
+        """Проверка алертов по объему и расчет CV"""
+        now = datetime.now(timezone.utc)
+        
+        # Конвертируем в USDT если нужно
+        quote = pair.symbol.split('/')[1] if '/' in pair.symbol else "USDT"
+        rate = rates.get(quote) if quote != "USDT" else 1.0
+        
+        if rate is None:
+            logger.warning(f"Пропуск расчета объема для {pair.symbol}: курс {quote}/USDT недоступен.")
+            return
+
+        # === 1. Расчет Коэффициента Вариации (CV) ===
+        cv_period = getattr(config, 'v_cv_period', 30)
+        if cv_period and cv_period > 0:
+            since_cv = now - timedelta(days=cv_period)
+            
+            stmt_cv = select(MarketData).where(
+                MarketData.pair_id == pair.id,
+                MarketData.timestamp >= since_cv
+            )
+            cv_candles = (await session.execute(stmt_cv)).scalars().all()
+            
+            if cv_candles:
+                # Группируем объемы в валюте котировки (переведенной в USDT) по дням
+                daily_volumes = {}
+                for c in cv_candles:
+                    day_key = c.timestamp.date()
+                    v_usd = float(c.volume * c.close) * rate
+                    daily_volumes[day_key] = daily_volumes.get(day_key, 0.0) + v_usd
+                
+                vol_array = list(daily_volumes.values())
+                if len(vol_array) > 0:
+                    mean_vol = sum(vol_array) / len(vol_array)
+                    if mean_vol > 0:
+                        # Дисперсия (генеральная совокупность)
+                        variance = sum((x - mean_vol) ** 2 for x in vol_array) / len(vol_array)
+                        std_dev = variance ** 0.5
+                        cv_value = int((std_dev / mean_vol) * 100)
+                        
+                        if pair.volume_cv != cv_value:
+                            pair.volume_cv = cv_value
+                            session.add(pair)
+                            await session.commit()
+
+        # === 2. Проверка алертов низкого объема ===
         v_period = config.v_period
         v_threshold = config.v_threshold
         
         if not (v_period and v_threshold and v_threshold > 0):
             return
 
-        now = datetime.now(timezone.utc)
         since_v = now - timedelta(days=v_period)
         
         stmt_v = select(func.sum(MarketData.volume * MarketData.close)).where(
@@ -183,16 +226,6 @@ class AlertEngine:
             MarketData.timestamp >= since_v
         )
         total_v_raw = (await session.execute(stmt_v)).scalar() or 0.0
-        
-        # Конвертируем в USDT если нужно
-        quote = pair.symbol.split('/')[1] if '/' in pair.symbol else "USDT"
-        
-        rate = rates.get(quote) if quote != "USDT" else 1.0
-        
-        if rate is None:
-            logger.warning(f"Пропуск расчета объема для {pair.symbol}: курс {quote}/USDT недоступен.")
-            return
-
         total_v_usdt = total_v_raw * rate
         
         period_str = f"Last {v_period} days"

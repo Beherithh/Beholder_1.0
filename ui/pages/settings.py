@@ -34,6 +34,7 @@ class SettingsPage:
         self.alert_price_days_dump_threshold = None
         self.alert_volume_days_period = None
         self.alert_volume_days_threshold = None
+        self.alert_volume_cv_period = 30
         # Настройки CoinMarketCap
         self.cmc_api_key = ""
         self.cmc_rank_threshold = 500
@@ -72,6 +73,7 @@ class SettingsPage:
         self.alert_price_days_dump_threshold = alert_conf.d_dump_threshold
         self.alert_volume_days_period = alert_conf.v_period
         self.alert_volume_days_threshold = alert_conf.v_threshold
+        self.alert_volume_cv_period = alert_conf.v_cv_period
         
         # CMC
         cmc_conf = await config.get_cmc_config()
@@ -124,6 +126,7 @@ class SettingsPage:
             await set_val("alert_price_days_dump_threshold", self.alert_price_days_dump_threshold)
             await set_val("alert_volume_days_period", self.alert_volume_days_period)
             await set_val("alert_volume_days_threshold", self.alert_volume_days_threshold)
+            await set_val("alert_volume_cv_period", self.alert_volume_cv_period)
             
             # Сохраняем настройки CMC (шифруем API Key)
             await set_secret("cmc_api_key", self.cmc_api_key)
@@ -474,6 +477,10 @@ class SettingsPage:
                 ui.label('Объем торгов (дни):').classes('w-48')
                 ui.number('Дни', min=1, max=30).classes('w-24').bind_value(self, 'alert_volume_days_period').props('dense')
                 ui.number('Порог USDT в день', min=0).classes('w-40').bind_value(self, 'alert_volume_days_threshold').props('dense suffix=USDT')
+                
+            with ui.row().classes('items-center gap-4 mt-2'):
+                ui.label('Коэффициент вариации объема (дни):').classes('w-48')
+                ui.number('Дни для расчета CV', min=1, max=30).classes('w-24').bind_value(self, 'alert_volume_cv_period').props('dense')
             
             ui.button('Сохранить настройки алертов', on_click=self.save_settings, color='positive').classes('w-fit self-end')
             ui.label('Если поля пустые - алерт считается выключенным. Пороги указываются как положительные числа.').classes('text-xs text-gray-400')
