@@ -18,6 +18,8 @@ class SignalsPage:
         self.signals = []
         self.full_rows = []
         self.table = None
+        self._ticker_query: str = ""   # серверный поиск по тикеру (bind_value)
+        self._mode_label = None        # ссылка на ui.label режима
 
     async def load_signals(self, search_query: str = "") -> None:
         """Загрузка сигналов из БД.
@@ -163,6 +165,46 @@ class SignalsPage:
         if self.table:
             self.apply_filters()
 
+    async def do_server_search(self, ex_select=None, type_select=None) -> None:
+        """Серверный поиск по тикеру  —  читает self._ticker_query.
+
+        Значение поля всегда актуально, т.к. ticker_input привязан через
+        bind_value(self, '_ticker_query').
+
+        Args:
+            ex_select:   ссылка на виджет выбора биржи (для обновления опций).
+            type_select: ссылка на виджет выбора типа (для обновления опций).
+        """
+        query = (self._ticker_query or "").strip()
+        ui.notify(f'Поиск: "{query}" …', type='info')
+
+        await self.refresh_table(search_query=query)
+
+        # Обновляем выпадающие списки под новые данные
+        if ex_select is not None:
+            ex_select.options = ['Все'] + sorted(
+                set(r['exchange'] for r in self.full_rows if r['exchange'] != '-')
+            )
+            ex_select.update()
+        if type_select is not None:
+            type_select.options = ['Все'] + sorted(
+                set(r['type'] for r in self.full_rows)
+            )
+            type_select.update()
+
+        self.apply_filters()
+
+        # Обновляем метку режима
+        if self._mode_label:
+            if query:
+                self._mode_label.set_text(
+                    f'Найдено по "{query.upper()}": {len(self.full_rows)} записей (вся история)'
+                )
+            else:
+                self._mode_label.set_text('Режим: последние 100 сигналов')
+
+        ui.notify('Готово', type='positive')
+
     def apply_filters(self):
         filtered = self.full_rows
         if GLOBAL_SIGNALS_FILTER_STATE["filter_exchange"] != 'Все':
@@ -201,58 +243,40 @@ class SignalsPage:
                 'announcement_url': announcement_url
             })
 
-        async def do_server_search(*_) -> None:
-            """Серверный поиск по тикеру — срабатывает по Enter или кнопке.
-
-            Принимает *_ чтобы поглощать event-объект, который NiceGUI
-            передаёт в колбэки, зарегистрированные через .on() и on_click.
-            """
-            query = ticker_input.value or ""
-            await self.refresh_table(search_query=query)
-            # Обновляем выпадающие списки фильтров под новые данные
-            exchanges = ['Все'] + sorted(set(r['exchange'] for r in self.full_rows if r['exchange'] != '-'))
-            types = ['Все'] + sorted(set(r['type'] for r in self.full_rows))
-            ex_select.options = exchanges
-            ex_select.update()
-            type_select.options = types
-            type_select.update()
-            self.apply_filters()
-            # Обновляем метку режима
-            if query.strip():
-                mode_label.set_text(f'Найдено по запросу "{query.upper()}": {len(self.full_rows)} записей (вся история)')
-            else:
-                mode_label.set_text('Режим: последние 100 сигналов')
-            ui.notify('Сигналы обновлены', type='info')
-
-        async def refresh_and_filter(*_) -> None:
-            """Обновление без изменения поискового запроса."""
-            await do_server_search()
-
         async def handle_resolve_event(signal_id: int) -> None:
             await self.resolve_risk_event(signal_id)
 
         with ui.card().classes('w-full max-w-6xl mx-auto p-4'):
             with ui.row().classes('w-full justify-between items-center mb-4'):
                 ui.label('История сигналов').classes('text-2xl font-bold')
-                ui.button(icon='refresh', on_click=refresh_and_filter).props('flat dense')
+                ui.button(
+                    icon='refresh',
+                    on_click=lambda: self.do_server_search(ex_select, type_select)
+                ).props('flat dense')
 
             # --- Поиск по тикеру (серверный, без лимита) ---
+            # bind_value гарантирует, что self._ticker_query всегда актуален
+            # даже в момент события keydown.enter (без задержки синхронизации).
             with ui.row().classes('w-full gap-2 items-center mb-2'):
                 ticker_input = (
                     ui.input(
                         placeholder='Тикер для поиска по всей истории (напр. XRP)...',
-                        on_change=None,  # только Enter / кнопка
                     )
                     .classes('flex-grow')
                     .props('dense outlined clearable')
+                    .bind_value(self, '_ticker_query')
                 )
-                # Enter в поле запускает серверный поиск.
-                # NiceGUI передаёт event-объект в on() — do_server_search принимает *_ и игнорирует его.
-                ticker_input.on('keydown.enter', do_server_search)
-                ui.button(icon='search', on_click=do_server_search).props('dense').tooltip('Искать по всей истории')
+                ticker_input.on(
+                    'keydown.enter',
+                    lambda _: self.do_server_search(ex_select, type_select)
+                )
+                ui.button(
+                    icon='search',
+                    on_click=lambda: self.do_server_search(ex_select, type_select)
+                ).props('dense').tooltip('Искать по всей истории')
 
-            # Метка-подсказка о текущем режиме
-            mode_label = ui.label('Режим: последние 100 сигналов').classes('text-xs text-gray-500 mb-2')
+            # Метка-подсказка о текущем режиме — сохраняем ссылку в self
+            self._mode_label = ui.label('Режим: последние 100 сигналов').classes('text-xs text-gray-500 mb-2')
 
             # --- Фильтры по загруженным данным (клиентские) ---
             initial_exchanges = ['Все'] + sorted(set(r['exchange'] for r in self.full_rows if r['exchange'] != '-'))
