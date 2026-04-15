@@ -47,54 +47,59 @@ class ScraperService:
     async def _update_pair_risk(self, session, pair: MonitoredPair, new_risk: RiskLevel, 
                                  signal_type: SignalType, msg: str, evidence: DelistingEvent = None) -> bool:
         """
-        Универсальный метод обновления риска пары.
-        Использует RiskLevel.priority для предотвращения понижения.
-        Returns True if something changed (risk level OR new signal created).
+        Универсальный метод обновления риска пары и отправки сигналов.
+        Обновляет статус если приоритет вырос, и всегда ищет дубликаты перед созданием сигнала.
         """
         changed = False
 
-        # 1. Обновляем уровень риска, если он повысился
-        if new_risk.priority > pair.risk_level.priority:
+        # Разделяем логику на проверки
+        is_upgraded = new_risk.priority > pair.risk_level.priority
+        is_same_level = new_risk.priority == pair.risk_level.priority
+
+        # 1. Обновляем уровень риска, ТОЛЬКО если он реально повысился
+        if is_upgraded:
             pair.risk_level = new_risk
             session.add(pair)
             changed = True
             
-            # 2. Отправляем уведомление только при ПОВЫШЕНИИ риска
-            if new_risk != RiskLevel.NORMAL:
-                # Условия для поиска дублей
-                conditions = [
-                    Signal.type == signal_type, 
-                    Signal.pair_id == pair.id
-                ]
+        # 2. Генерируем сигнал при ПОВЫШЕНИИ риска ИЛИ при новом событии того же уровня
+        if (is_upgraded or is_same_level) and new_risk != RiskLevel.NORMAL:
+            # Условия для поиска дублей
+            conditions = [
+                Signal.type == signal_type, 
+                Signal.pair_id == pair.id
+            ]
+            
+            # Если передан эвиденс (событие), ищем упоминание конкретной биржи
+            if evidence:
+                conditions.append(Signal.raw_message.like(f"%Info from: {evidence.exchange}.%"))
+                # Если это реальная статья (не API тег), ищем конкретный URL статьи, чтобы не пропустить новые статьи
+                if evidence.announcement_url and evidence.announcement_url != "API" and not evidence.announcement_url.startswith("http://API"):
+                    conditions.append(Signal.raw_message.like(f"%Article: {evidence.announcement_url}%"))
+            
+            sig_check = select(Signal).where(*conditions)
+            existing_sig = (await session.execute(sig_check)).first()
+            
+            if not existing_sig:
+                logger.warning(f"Creating NEW signal (risk event detected): {msg}")
+                new_sig = Signal(type=signal_type, pair_id=pair.id, raw_message=msg)
+                session.add(new_sig)
+                await session.commit()
+                await session.refresh(new_sig)
                 
-                # Если передан эвиденс (событие), ищем упоминание конкретной биржи
-                if evidence:
-                    conditions.append(Signal.raw_message.like(f"%Info from: {evidence.exchange}.%"))
-                    # Если это реальная статья (не API тег), ищем конкретный URL статьи, чтобы не пропустить новые статьи
-                    if evidence.announcement_url and evidence.announcement_url != "API" and not evidence.announcement_url.startswith("http://API"):
-                        conditions.append(Signal.raw_message.like(f"%Article: {evidence.announcement_url}%"))
-                
-                sig_check = select(Signal).where(*conditions)
-                existing_sig = (await session.execute(sig_check)).first()
-                
-                if not existing_sig:
-                    logger.warning(f"Creating NEW signal (risk increased): {msg}")
-                    new_sig = Signal(type=signal_type, pair_id=pair.id, raw_message=msg)
-                    session.add(new_sig)
-                    await session.commit()
-                    await session.refresh(new_sig)
-                    
-                    # Отправка через инжектированный сервис уведомлений
-                    asyncio.create_task(self.notification_service.send_and_log_signal(new_sig.id, msg, prefix=""))
-                else:
-                    logger.info(f"Signal already exists, skipping: {msg[:100]}...")
+                # Отправка через инжектированный сервис уведомлений
+                asyncio.create_task(self.notification_service.send_and_log_signal(new_sig.id, msg, prefix=""))
+                changed = True  # Сигнал создан - значит система изменилась
+            else:
+                logger.info(f"Signal already exists, skipping: {msg[:100]}...")
 
         return changed
 
     async def demote_orphaned_risks(self, session: AsyncSession):
         """
-        Проверяет пары с повышенным риском и сбрасывает его, если нет активных событий.
-        Это исправляет ситуацию, когда DelistingEvent удаляется вручную из БД.
+        Проверяет пары с повышенным риском и 'ступенчато' сбрасывает его,
+        если соответствующих событий больше нет.
+        Это исправляет ситуацию, когда DelistingEvent удаляется вручную из БД (полностью или частично).
         """
         logger.info("Проверка и сброс 'осиротевших' рисков...")
         
@@ -110,32 +115,56 @@ class ScraperService:
         base_symbols = list({p.base_currency for p in risky_pairs})
         events_stmt = select(DelistingEvent).where(DelistingEvent.symbol.in_(base_symbols))
         all_events = (await session.execute(events_stmt)).scalars().all()
-        
-        # Создаем множество символов, у которых ДЕЙСТВИТЕЛЬНО есть события
-        symbols_with_events = {event.symbol for event in all_events}
 
         demoted_count = 0
-        # 3. Ищем "сирот"
+        
+        # 3. Пересчитываем реальный (оправданный) риск для каждой пары
         for pair in risky_pairs:
             base_currency = pair.base_currency
-            if base_currency not in symbols_with_events:
-                logger.warning(f"Сброс риска для {pair.symbol}: нет активных событий Delisting/ST. "
-                               f"Текущий риск: {pair.risk_level.name}")
-                
-                # Сбрасываем риск
+            
+            # Ивенты ТОЛЬКО для этой базовой валюты
+            pair_events = [e for e in all_events if e.symbol == base_currency]
+            
+            if not pair_events:
+                # Если ивентов нет совсем - полный сброс до NORMAL
+                logger.warning(f"Полный сброс риска для {pair.symbol}: нет активных событий. "
+                               f"Был риск: {pair.risk_level.name}")
                 pair.risk_level = RiskLevel.NORMAL
                 session.add(pair)
                 demoted_count += 1
                 
-                # Удаляем старые сигналы, связанные с этим
+                # Функция UI уже удаляет нужные сигналы при очистке, 
+                # но оставляем этот блок как "сборщик мусора" для гарантии очистки БД
                 await session.execute(delete(Signal).where(
                     Signal.pair_id == pair.id,
                     Signal.type.in_([SignalType.DELISTING_WARNING, SignalType.ST_WARNING])
                 ))
+            else:
+                # Ивенты есть. Вычисляем максимально оправданный риск из того, что осталось.
+                theoretical_max_risk = RiskLevel.NORMAL
+                
+                for ev in pair_events:
+                    is_direct = (ev.exchange.upper() == pair.exchange.upper())
+                    ev_risk = RiskLevel.NORMAL
+                    
+                    if ev.type == DelistingEventType.DELISTING:
+                        ev_risk = RiskLevel.DELISTING_PLANNED if is_direct else RiskLevel.CROSS_DELISTING
+                    elif ev.type == DelistingEventType.ST:
+                        ev_risk = RiskLevel.RISK_ZONE if is_direct else RiskLevel.CROSS_RISK
+                        
+                    if ev_risk.priority > theoretical_max_risk.priority:
+                        theoretical_max_risk = ev_risk
+                
+                # Если посчитанный риск ОКРУЖЕНИЯ ниже текущего риска ПАРЫ -> понижаем его!
+                if theoretical_max_risk.priority < pair.risk_level.priority:
+                    logger.info(f"Ступенчатое понижение риска для {pair.symbol}: {pair.risk_level.name} -> {theoretical_max_risk.name}")
+                    pair.risk_level = theoretical_max_risk
+                    session.add(pair)
+                    demoted_count += 1
 
         if demoted_count > 0:
             await session.commit()
-            logger.success(f"Сброшен риск для {demoted_count} пар.")
+            logger.success(f"Понижен/сброшен риск для {demoted_count} пар.")
         else:
             logger.info("'Осиротевших' рисков не найдено.")
 
