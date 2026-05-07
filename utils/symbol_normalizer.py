@@ -10,7 +10,7 @@ from typing import Optional
 
 # Стандартные котировочные валюты, упорядоченные по частоте использования.
 # Это суперсет всех котировок, встречающихся в API бирж и файлах-списках.
-STANDARD_QUOTES = ("USDT", "BTC", "ETH", "USDC", "BNB", "SOL", "BUSD", "FDUSD", "TUSD")
+STANDARD_QUOTES = ("USDT", "BTC", "ETH", "USDC", "BNB", "SOL", "BUSD", "FDUSD", "TUSD", "USD")
 
 
 def normalize_symbol(raw_symbol: str, fallback_quote: Optional[str] = None) -> str:
