@@ -55,4 +55,13 @@ app.on_startup(startup)
 app.on_shutdown(shutdown)
 
 if __name__ in {"__main__", "__mp_main__"}:
-    ui.run(title='Beholder Dashboard', port=8080, host='127.0.0.1', reload=False, show=False, fastapi_docs=False)
+    #для запуска с открытыми портами, инфо из окружения
+    listen_host = os.getenv('APP_HOST', '127.0.0.1')
+    listen_port = int(os.getenv('APP_PORT', '8080'))
+
+    ui.run(title='Beholder Dashboard',
+           port=listen_port,
+           host=listen_host,
+           reload=False,
+           show=False,
+           fastapi_docs=False)
