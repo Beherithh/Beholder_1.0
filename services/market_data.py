@@ -173,7 +173,14 @@ class MarketDataService:
             try:
                 # Инициализируем биржу один раз для всей пачки
                 exchange_class = getattr(ccxt, ex_name)
-                async with exchange_class() as exchange:
+                
+                # Добавляем опцию defaultType: 'spot' для Gate.io
+                if ex_name == 'gateio':
+                    exchange = exchange_class({'options': {'defaultType': 'spot'}})
+                else:
+                    exchange = exchange_class()
+
+                async with exchange:
                     # Включаем встроенный rate limiter в CCXT (если есть)
                     exchange.enableRateLimit = True 
                     
