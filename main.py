@@ -1,3 +1,5 @@
+import os
+
 from nicegui import ui, app
 from loguru import logger
 
