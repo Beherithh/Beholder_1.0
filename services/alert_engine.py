@@ -180,37 +180,31 @@ class AlertEngine:
             return
 
         # === 1. Расчет Коэффициента Вариации (CV) ===
+        # CV считается по сырому объёму каждой часовой свечи (натуральные единицы монеты).
+        # Конвертация в USDT и агрегация по дням не нужны: CV — безразмерная величина,
+        # а почасовые данные точнее отражают реальную нестабильность торгов.
         cv_period = getattr(config, 'v_cv_period', 30)
         if cv_period and cv_period > 0:
             since_cv = now - timedelta(days=cv_period)
-            
-            stmt_cv = select(MarketData).where(
+
+            stmt_cv = select(MarketData.volume).where(
                 MarketData.pair_id == pair.id,
                 MarketData.timestamp >= since_cv
             )
             cv_candles = (await session.execute(stmt_cv)).scalars().all()
-            
+
             if cv_candles:
-                # Группируем объемы в валюте котировки (переведенной в USDT) по дням
-                daily_volumes = {}
-                for c in cv_candles:
-                    day_key = c.timestamp.date()
-                    v_usd = float(c.volume * c.close) * rate
-                    daily_volumes[day_key] = daily_volumes.get(day_key, 0.0) + v_usd
-                
-                vol_array = list(daily_volumes.values())
-                if len(vol_array) > 0:
-                    mean_vol = sum(vol_array) / len(vol_array)
-                    if mean_vol > 0:
-                        # Дисперсия (генеральная совокупность)
-                        variance = sum((x - mean_vol) ** 2 for x in vol_array) / len(vol_array)
-                        std_dev = variance ** 0.5
-                        cv_value = int((std_dev / mean_vol) * 100)
-                        
-                        if pair.volume_cv != cv_value:
-                            pair.volume_cv = cv_value
-                            session.add(pair)
-                            await session.commit()
+                vol_array = [float(v) for v in cv_candles]
+                n = len(vol_array)
+                mean_vol = sum(vol_array) / n
+                if mean_vol > 0:
+                    variance = sum((x - mean_vol) ** 2 for x in vol_array) / n
+                    cv_value = int((variance ** 0.5 / mean_vol) * 100)
+
+                    if pair.volume_cv != cv_value:
+                        pair.volume_cv = cv_value
+                        session.add(pair)
+                        await session.commit()
 
         # === 2. Проверка алертов низкого объема ===
         v_period = config.v_period
