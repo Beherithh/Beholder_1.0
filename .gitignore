@@ -63,4 +63,7 @@ gate_article.html
 /check_tables.py
 /Check_Volume.py
 /compare_beholders.py
-/tools/get_gate_volume.py
+hand_tools/
+hand_tools/get_gate_volume.py
+hand_tools/get_gate_volume2.py
+hand_tools/get_market_volume.py
