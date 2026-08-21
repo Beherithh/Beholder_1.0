@@ -10,6 +10,11 @@ class MonitoringStatus(str, Enum):
     ACTIVE = "active"
     INACTIVE = "inactive"
 
+class MarketType(str, Enum):
+    SPOT = "spot"
+    LINEAR = "linear"      # Linear perpetual (USDT-margined)
+    INVERSE = "inverse"    # Inverse perpetual (Coin-margined)
+
 class RiskLevel(str, Enum):
     NORMAL = "normal"
     CROSS_RISK = "cross_risk"
@@ -46,14 +51,17 @@ class MonitoredPair(SQLModel, table=True):
     """
     Основная таблица отслеживаемых пар.
     """
-    # Гарантируем уникальность пары на бирже
+    # Гарантируем уникальность пары на бирже с учетом типа рынка
     __table_args__ = (
-        UniqueConstraint("exchange", "symbol", name="unique_exchange_symbol"),
+        UniqueConstraint("exchange", "symbol", "market_type", name="unique_exchange_symbol_market"),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     exchange: str = Field(index=True) # Например: "GATEIO"
     symbol: str = Field(index=True)   # Например: "BTC/USDT"
+    
+    # Тип рынка (spot/linear/inverse)
+    market_type: MarketType = Field(default=MarketType.SPOT, index=True)
     
     # Путь к файлу, откуда пришла пара (для синхронизации)
     source_file: str 

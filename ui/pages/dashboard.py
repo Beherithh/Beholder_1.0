@@ -186,6 +186,7 @@ async def get_dashboard_data() -> Dict[str, Any]:
                 "id": pair.id,
                 "exchange": pair.exchange,
                 "symbol": pair.symbol,
+                "market_type": pair.market_type.value,  # NEW: Тип рынка (spot/linear/inverse)
                 "rank": rank_val,
                 "rank_color": rank_color,
                 "risk_level": pair.risk_level.value.upper().replace("_", " "),
@@ -344,6 +345,7 @@ async def dashboard_page():
             columns = [
                 {'name': 'exchange', 'label': 'Биржа', 'field': 'exchange', 'align': 'left', 'sortable': True},
                 {'name': 'symbol', 'label': 'Пара', 'field': 'symbol', 'align': 'left', 'sortable': True},
+                {'name': 'market_type', 'label': 'Рынок', 'field': 'market_type', 'align': 'center', 'sortable': True},
                 {'name': 'rank', 'label': 'CMC Rank', 'field': 'rank', 'align': 'center', 'sortable': True},
                 {'name': 'risk_level', 'label': 'Статус', 'field': 'risk_level', 'align': 'center', 'sortable': True},
                 {'name': 'pump_val', 'label': '🚀 Pump', 'field': 'pump_val', 'align': 'center', 'sortable': True},
@@ -359,6 +361,23 @@ async def dashboard_page():
             table_ref.props('flat bordered wrap-cells')
             
             # Слоты для кастомного рендеринга
+            table_ref.add_slot('body-cell-market_type', '''
+                <q-td :props="props">
+                    <q-badge v-if="props.value === 'spot'" class="bg-green-100 text-green-700" outline>
+                        🟢 Spot
+                    </q-badge>
+                    <q-badge v-else-if="props.value === 'linear'" class="bg-blue-100 text-blue-700" outline>
+                        🔵 Linear
+                    </q-badge>
+                    <q-badge v-else-if="props.value === 'inverse'" class="bg-orange-100 text-orange-700" outline>
+                        🟠 Inverse
+                    </q-badge>
+                    <q-badge v-else class="bg-gray-100 text-gray-500" outline>
+                        {{ props.value }}
+                    </q-badge>
+                </q-td>
+            ''')
+            
             table_ref.add_slot('body-cell-risk_level', '''
                 <q-td :props="props">
                     <template v-if="props.row.announcement_url">

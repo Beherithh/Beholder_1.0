@@ -7,7 +7,7 @@ from loguru import logger
 from sqlmodel import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import MonitoredPair, MonitoringStatus, RiskLevel, Signal
+from database.models import MonitoredPair, MonitoringStatus, RiskLevel, Signal, MarketType
 from utils.symbol_normalizer import normalize_symbol
 from services.config import ConfigService
 
@@ -29,6 +29,16 @@ class FileWatcherService:
     EXCHANGE_MAPPING = {
         "GATE": "GATEIO",
         # Сюда можно добавлять другие биржи по мере необходимости
+    }
+    
+    # Маппинг ключевых слов типа рынка в enum MarketType
+    MARKET_TYPE_KEYWORDS = {
+        'futures': MarketType.LINEAR,
+        'future': MarketType.LINEAR,
+        'swap': MarketType.LINEAR,
+        'linear': MarketType.LINEAR,
+        'inverse': MarketType.INVERSE,
+        'spot': MarketType.SPOT,
     }
 
     async def _read_files(self, file_items: List[Dict[str, str]]) -> Tuple[Set[Tuple[str, str, str, str]], List[str]]:
@@ -56,27 +66,45 @@ class FileWatcherService:
             # 1. Парсинг имени файла
             filename = path.name
 
-            # Регулярка для извлечения биржи и валюты котирования (например, USDT).
+            # Регулярка для извлечения биржи, типа рынка и валюты котирования.
             # Поддерживает форматы:
-            # - Gate_instruments_USDT
-            # - 2_Gate_instruments_USDT
-            # - Gate_ANYTHING_ANYTHING
-            # - Kucoin spot_ANYTHING_BTC(or anything)       (тип рынка "Spot" игнорируется)
-            # - 2_Kucoin spot_ANYTHING_BTC(or anything)     (числовой префикс + тип рынка)
+            # - Gate_instruments_USDT                    → spot (по умолчанию)
+            # - Bybit Futures_instruments_USDT           → linear
+            # - Bybit Swap_instruments_USDT              → linear
+            # - 2_Bybit Linear_instruments_USDT          → linear
+            # - Bybit Inverse_instruments_BTC            → inverse
+            # - Kucoin spot_instruments_BTC              → spot
             #
-            # Биржа — это первое слово до пробела или `_` (группа [^ _]+).
-            # Всё между биржей и служебным словом (_instruments_ и т.п.) — тип рынка, игнорируется.
-            match = re.match(r'^(?:\d+_)?([^ _]+).*?_[^_ ]+_([^_ ]+?)(?:\.[^.]+)?$', filename)
+            # Группы regex:
+            # 1: Биржа (первое слово до пробела или `_`)
+            # 2: Тип рынка (Futures, Swap, Linear, Inverse, Spot) - опционально
+            # 3: Валюта котирования (последний сегмент перед расширением)
+            match = re.match(
+                r'^(?:\d+_)?([^ _]+)\s*(Futures?|Swap|Linear|Inverse|futures?|swap|linear|inverse|spot|Spot)?.*?_[^_ ]+_([^_ ]+?)(?:\.[^.]+)?$',
+                filename
+            )
             
             if match:
                 raw_exchange = match.group(1).upper()
-                # Нормализация имени биржи (например GATE -> gateio)
+                market_type_word = match.group(2)  # 'Futures', 'Swap', None, и т.д.
+                quote_currency = match.group(3).upper()
+                
+                # Нормализация имени биржи (например GATE -> GATEIO)
                 exchange_name = self.EXCHANGE_MAPPING.get(raw_exchange, raw_exchange)
-                quote_currency = match.group(2).upper()
+                
+                # Определяем тип рынка
+                if market_type_word:
+                    market_type = self.MARKET_TYPE_KEYWORDS.get(
+                        market_type_word.lower(),
+                        MarketType.SPOT
+                    )
+                else:
+                    market_type = MarketType.SPOT  # По умолчанию
             else:
-                logger.warning(f"Не удалось извлечь данные из имени: {filename}. Defaults.")
+                logger.warning(f"Не удалось извлечь данные из имени: {filename}. Используем defaults.")
                 exchange_name = "UNKNOWN"
                 quote_currency = None
+                market_type = MarketType.SPOT
 
             # 2. Парсинг содержимого
             try:
@@ -102,7 +130,8 @@ class FileWatcherService:
                             logger.warning(f"Символ '{raw_symbol}' пропущен: не удалось определить котировку.")
                             continue
 
-                        found_pairs.add((exchange_name, normalized_symbol, path_str, label))
+                        # Добавляем market_type в кортеж found_pairs
+                        found_pairs.add((exchange_name, normalized_symbol, market_type, path_str, label))
                     
             except json.JSONDecodeError:
                 logger.error(f"Ошибка парсинга JSON в {path_str}")
@@ -123,11 +152,11 @@ class FileWatcherService:
         file_pairs_set, missing_files = await self._read_files(file_dict_list)
         stats["missing_files"] = missing_files
         
-        # Агрегация: (exchange, symbol) -> {labels: set(), files: set()}
+        # Агрегация: (exchange, symbol, market_type) -> {labels: set(), files: set()}
         aggregated_map = {}
         
-        for (ex, sym, src, lbl) in file_pairs_set:
-            key = (ex, sym)
+        for (ex, sym, mtype, src, lbl) in file_pairs_set:
+            key = (ex, sym, mtype)  # Добавляем market_type в ключ
             if key not in aggregated_map:
                 aggregated_map[key] = {"labels": set(), "files": set()}
             
@@ -139,17 +168,17 @@ class FileWatcherService:
             result = await session.execute(statement)
             db_pairs = result.scalars().all()
             
-            db_pairs_map = { (p.exchange, p.symbol): p for p in db_pairs }
+            db_pairs_map = { (p.exchange, p.symbol, p.market_type): p for p in db_pairs }
 
             # 3. Обработка ВХОДЯЩИХ
-            for (exchange, symbol), data in aggregated_map.items():
+            for (exchange, symbol, market_type), data in aggregated_map.items():
                 # Формируем JSON строку меток (сортируем для стабильности)
                 labels_list = sorted(list(data["labels"]))
                 labels_json = json.dumps(labels_list, ensure_ascii=False)
                 primary_file = list(data["files"])[0]
 
-                if (exchange, symbol) in db_pairs_map:
-                    existing_pair = db_pairs_map[(exchange, symbol)]
+                if (exchange, symbol, market_type) in db_pairs_map:
+                    existing_pair = db_pairs_map[(exchange, symbol, market_type)]
 
                     if existing_pair.monitoring_status == MonitoringStatus.INACTIVE:
                         existing_pair.monitoring_status = MonitoringStatus.ACTIVE
@@ -168,6 +197,7 @@ class FileWatcherService:
                     new_pair = MonitoredPair(
                         exchange=exchange,
                         symbol=symbol,
+                        market_type=market_type,  # NEW: Сохраняем тип рынка
                         source_file=primary_file,
                         source_label=labels_json,
                         monitoring_status=MonitoringStatus.ACTIVE,
@@ -177,8 +207,8 @@ class FileWatcherService:
                     stats["added"] += 1
 
             # 4. Обработка ИСЧЕЗНУВШИХ
-            for (exchange, symbol), db_pair in db_pairs_map.items():
-                if (exchange, symbol) not in aggregated_map:
+            for (exchange, symbol, market_type), db_pair in db_pairs_map.items():
+                if (exchange, symbol, market_type) not in aggregated_map:
                     if db_pair.monitoring_status == MonitoringStatus.ACTIVE:
                         # Была активна, но исчезла из файлов -> УДАЛЯЕМ (Мягко)
                         db_pair.monitoring_status = MonitoringStatus.INACTIVE

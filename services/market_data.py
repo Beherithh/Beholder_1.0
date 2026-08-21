@@ -4,9 +4,10 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict
 from loguru import logger
 from sqlmodel import select, desc, delete
-from database.models import MonitoredPair, MarketData
+from database.models import MonitoredPair, MarketData, MarketType
 from sqlalchemy.ext.asyncio import AsyncSession
 from services.config import ConfigService
+from utils.symbol_normalizer import normalize_symbol_for_exchange
 
 class MarketDataService:
     """
@@ -41,12 +42,24 @@ class MarketDataService:
         """
         Обновляет историю для одной пары, используя переданный экземпляр биржи.
         В цикле загружает все доступные свечи до текущего момента.
+        NEW: Нормализует volume с учетом contractSize при записи.
         Возвращает общее количество добавленных свечей.
         """
         total_new_candles = 0
         try:
             last_time = await self._get_last_candle_time(session, pair.id)
             logger.info(f"[{pair.exchange}] Начинаем догрузку {pair.symbol} с {last_time}...")
+            
+            # Нормализуем символ для конкретной биржи и типа рынка
+            # Например, для Bybit Linear: 'BTC/USDT' -> 'BTC/USDT:USDT'
+            normalized_symbol = normalize_symbol_for_exchange(
+                pair.symbol,
+                pair.exchange,
+                pair.market_type.value
+            )
+            
+            # NEW: Получаем volume_multiplier для нормализации volume
+            volume_multiplier = self._get_volume_multiplier(exchange, normalized_symbol, pair.market_type)
             
             # Определяем начало текущего часа (UTC), чтобы не записывать неполную свечу
             now = datetime.now(timezone.utc)
@@ -56,7 +69,7 @@ class MarketDataService:
                 # CCXT требует timestamp в миллисекундах
                 since = int(last_time.timestamp() * 1000)
                 
-                candles = await exchange.fetch_ohlcv(pair.symbol, timeframe='1h', since=since)
+                candles = await exchange.fetch_ohlcv(normalized_symbol, timeframe='1h', since=since)
                 
                 if not candles:
                     # Если биржа вернула пустой список, но мы еще далеко в прошлом (> 1 дня до 'сейчас')
@@ -82,11 +95,16 @@ class MarketDataService:
                     # Игнорируем текущую (незавершенную) свечу
                     if candle_time >= current_candle_start:
                         continue
+                    
+                    # NEW: Нормализуем volume с учетом contractSize
+                    # Для spot: volume уже в единицах валюты (multiplier = 1.0)
+                    # Для futures/swap: volume в контрактах, умножаем на contractSize
+                    normalized_volume = v * volume_multiplier
                         
                     new_market_data.append(MarketData(
                         pair_id=pair.id,
                         timestamp=candle_time,
-                        open=o, high=h, low=l, close=c, volume=v
+                        open=o, high=h, low=l, close=c, volume=normalized_volume
                     ))
                 
                 new_count_in_batch = len(new_market_data)
@@ -112,7 +130,10 @@ class MarketDataService:
                 await asyncio.sleep(exchange.rateLimit / 1000.0)
 
             if total_new_candles > 0:
-                logger.success(f"[{pair.exchange}] Всего сохранено {total_new_candles} новых свечей для {pair.symbol}")
+                logger.success(
+                    f"[{pair.exchange}] Всего сохранено {total_new_candles} новых свечей для {pair.symbol} "
+                    f"(volume_multiplier={volume_multiplier})"
+                )
             else:
                 logger.info(f"[{pair.exchange}] Нет новых свечей для {pair.symbol}")
                 
@@ -121,6 +142,50 @@ class MarketDataService:
         except Exception as e:
             logger.error(f"Ошибка при обновлении {pair.exchange}:{pair.symbol} -> {e}")
             return 0
+
+    def _get_volume_multiplier(self, exchange, normalized_symbol: str, market_type: MarketType) -> float:
+        """
+        Получает множитель объема (contractSize) из кэша exchange.markets.
+        
+        Для спот-рынков всегда возвращает 1.0.
+        Для фьючерсов/свопов получает contractSize из CCXT markets.
+        
+        Args:
+            exchange: Инициализированный CCXT exchange с загруженными markets
+            normalized_symbol: Нормализованный символ (например, 'BTC/USDT:USDT')
+            market_type: Тип рынка (spot/linear/inverse)
+            
+        Returns:
+            contractSize для фьючерсов/свопов, 1.0 для спота или при ошибке
+        """
+        # Для спот-рынков всегда возвращаем 1.0
+        if market_type == MarketType.SPOT:
+            return 1.0
+        
+        try:
+            # Получаем информацию о рынке из кэша CCXT
+            # Кэш заполняется после вызова exchange.load_markets()
+            market = exchange.markets.get(normalized_symbol)
+            
+            if market is None:
+                logger.warning(
+                    f"Market info not found for {normalized_symbol}, using default multiplier 1.0"
+                )
+                return 1.0
+            
+            # Получаем contractSize, по умолчанию 1.0
+            contract_size = market.get('contractSize', 1.0)
+            
+            if contract_size != 1.0:
+                logger.info(f"Using contractSize={contract_size} for {normalized_symbol}")
+            
+            return float(contract_size)
+            
+        except Exception as e:
+            logger.error(
+                f"Error getting volume multiplier for {normalized_symbol}: {e}, using default 1.0"
+            )
+            return 1.0
 
     async def cleanup_old_market_data(self, days=180):
         """
@@ -155,36 +220,49 @@ class MarketDataService:
             logger.info("Нет активных пар для обновления.")
             return
 
-        # Группировка по бирже
-        pairs_by_exchange: Dict[str, List[MonitoredPair]] = {}
+        # Группировка по (биржа, тип рынка)
+        from typing import Tuple
+        pairs_by_exchange_and_type: Dict[Tuple[str, str], List[MonitoredPair]] = {}
+        
         for pair in pairs:
             ex_name = pair.exchange.lower()
-            if ex_name not in pairs_by_exchange:
-                pairs_by_exchange[ex_name] = []
-            pairs_by_exchange[ex_name].append(pair)
+            market_type = pair.market_type.value  # 'spot', 'linear', 'inverse'
+            key = (ex_name, market_type)
             
-        logger.info(f"Начинаем обновление для {len(pairs_by_exchange)} бирж...")
+            if key not in pairs_by_exchange_and_type:
+                pairs_by_exchange_and_type[key] = []
+            pairs_by_exchange_and_type[key].append(pair)
+            
+        logger.info(f"Начинаем обновление для {len(pairs_by_exchange_and_type)} групп (биржа + тип рынка)...")
 
-        for ex_name, exchange_pairs in pairs_by_exchange.items():
+        for (ex_name, market_type), exchange_pairs in pairs_by_exchange_and_type.items():
             if ex_name not in ccxt.exchanges:
                 logger.warning(f"Биржа '{ex_name}' не поддерживается CCXT. Пропускаем.")
                 continue
                 
             try:
-                # Инициализируем биржу один раз для всей пачки
+                # Инициализируем биржу с правильным типом рынка
                 exchange_class = getattr(ccxt, ex_name)
                 
-                # Добавляем опцию defaultType: 'spot' для Gate.io
-                if ex_name == 'gateio':
-                    exchange = exchange_class({'options': {'defaultType': 'spot'}})
-                else:
-                    exchange = exchange_class()
+                # Создаем exchange с указанием типа рынка через defaultType
+                exchange = exchange_class({
+                    'options': {
+                        'defaultType': market_type  # 'spot', 'linear', 'inverse'
+                    }
+                })
 
                 async with exchange:
-                    # Включаем встроенный rate limiter в CCXT (если есть)
-                    exchange.enableRateLimit = True 
+                    # Включаем встроенный rate limiter в CCXT
+                    exchange.enableRateLimit = True
                     
-                    logger.info(f"Запуск сессии для {ex_name.upper()} (Пар: {len(exchange_pairs)}) - параллельно")
+                    # NEW: Загружаем markets для получения contractSize
+                    # CCXT автоматически кэширует результат, повторные вызовы не делают API-запросы
+                    await exchange.load_markets()
+                    
+                    logger.info(
+                        f"[{ex_name.upper()}] Обновление {len(exchange_pairs)} пар "
+                        f"(market_type={market_type})"
+                    )
                     
                     semaphore = asyncio.Semaphore(5)
                     
@@ -197,7 +275,7 @@ class MarketDataService:
                     await asyncio.gather(*tasks)
                         
             except Exception as e:
-                logger.error(f"Критическая ошибка при работе с биржей {ex_name}: {e}")
+                logger.error(f"Критическая ошибка при работе с {ex_name} ({market_type}): {e}")
                      
         logger.info("Обновление всех пар завершено.")
 

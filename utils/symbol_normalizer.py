@@ -58,3 +58,42 @@ def normalize_symbol(raw_symbol: str, fallback_quote: Optional[str] = None) -> s
 
     # 5. Невозможно определить котировку — возвращаем как есть
     return symbol
+
+
+def normalize_symbol_for_exchange(symbol: str, exchange: str, market_type: str) -> str:
+    """Нормализует символ для конкретной биржи и типа рынка.
+    
+    Некоторые биржи требуют специфичный формат символов в зависимости от типа рынка:
+    - Bybit Linear Perpetual: 'BTC/USDT:USDT' (с settlement currency после двоеточия)
+    - Bybit Inverse Perpetual: 'BTC/USD:BTC'
+    - Spot markets: стандартный формат 'BTC/USDT'
+    
+    Args:
+        symbol: Нормализованный символ в формате 'BASE/QUOTE'
+        exchange: Название биржи (например, 'bybit', 'binance')
+        market_type: Тип рынка ('spot', 'linear', 'inverse')
+    
+    Returns:
+        Символ в формате, требуемом биржей для данного типа рынка.
+    """
+    exchange = exchange.upper()
+    market_type = market_type.lower()
+    
+    # Bybit требует специальный формат для derivatives
+    if exchange == 'BYBIT':
+        if market_type == 'linear':
+            # Linear perpetual требует формат 'BASE/QUOTE:SETTLEMENT'
+            # Для USDT-margined это 'BTC/USDT:USDT'
+            if ':' not in symbol and symbol.endswith('/USDT'):
+                return f"{symbol}:USDT"
+            elif ':' not in symbol and symbol.endswith('/USDC'):
+                return f"{symbol}:USDC"
+        elif market_type == 'inverse':
+            # Inverse perpetual требует формат 'BASE/USD:BASE'
+            # Например, 'BTC/USD:BTC'
+            if ':' not in symbol and '/USD' in symbol:
+                base = symbol.split('/')[0]
+                return f"{symbol}:{base}"
+    
+    # Для остальных бирж или spot рынков возвращаем без изменений
+    return symbol
