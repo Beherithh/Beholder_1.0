@@ -456,7 +456,7 @@ class SettingsPage:
             
             with ui.row().classes('items-center gap-4 ml-4'):
                 ui.label('Дни:').classes('w-32')
-                ui.number('Период (дн)', min=1, max=60).classes('w-24').bind_value(self, 'alert_price_days_pump_period').props('dense')
+                ui.number('Период (дн)', min=1, max=30).classes('w-24').bind_value(self, 'alert_price_days_pump_period').props('dense')
                 ui.number('Порог %', min=0.1).classes('w-24').bind_value(self, 'alert_price_days_pump_threshold').props('dense suffix=%')
             
             # Dump Alerts
@@ -468,7 +468,7 @@ class SettingsPage:
             
             with ui.row().classes('items-center gap-4 ml-4'):
                 ui.label('Дни:').classes('w-32')
-                ui.number('Период (дн)', min=1, max=60).classes('w-24').bind_value(self, 'alert_price_days_dump_period').props('dense')
+                ui.number('Период (дн)', min=1, max=30).classes('w-24').bind_value(self, 'alert_price_days_dump_period').props('dense')
                 ui.number('Порог %', min=0.1).classes('w-24').bind_value(self, 'alert_price_days_dump_threshold').props('dense suffix=%')
         
             # Volume Days
