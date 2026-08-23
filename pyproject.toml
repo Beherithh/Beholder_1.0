@@ -17,6 +17,7 @@ dependencies = [
     "tgcrypto>=1.2.5",
     "cryptography>=46.0.3",
     "curl-cffi>=0.14.0",
+    "ipykernel>=7.3.0",
 ]
 
 [dependency-groups]
