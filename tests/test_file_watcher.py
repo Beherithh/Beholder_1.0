@@ -42,7 +42,7 @@ class TestReadFiles:
         result, missing_files = await service._read_files([{"path": str(fp), "name": "Gate 1"}])
 
         assert len(result) == 1
-        exchange, symbol, path, label = next(iter(result))
+        exchange, symbol, market_type, path, label = next(iter(result))
         assert exchange == "GATEIO"       # GATE → GATEIO через EXCHANGE_MAPPING
         assert symbol == "BTC/USDT"       # BTCUSDT → BTC/USDT
         assert label == "Gate 1"
@@ -54,7 +54,7 @@ class TestReadFiles:
         service = FileWatcherService(session_factory=MagicMock(), config_service=MagicMock())
 
         result, missing_files = await service._read_files([{"path": str(fp), "name": "Test"}])
-        _, symbol, _, _ = next(iter(result))
+        _, symbol, _, _, _ = next(iter(result))
         assert symbol == "BTC/USDT"
 
     @pytest.mark.asyncio
@@ -67,7 +67,7 @@ class TestReadFiles:
         service = FileWatcherService(session_factory=MagicMock(), config_service=MagicMock())
 
         result, missing_files = await service._read_files([{"path": str(fp), "name": "Test"}])
-        symbols = {sym for _, sym, _, _ in result}
+        symbols = {sym for _, sym, _, _, _ in result}
         assert symbols == {"BTC/USDT", "ETH/USDT", "SOL/USDT"}
 
     @pytest.mark.asyncio
@@ -96,7 +96,7 @@ class TestReadFiles:
         service = FileWatcherService(session_factory=MagicMock(), config_service=MagicMock())
 
         result, missing_files = await service._read_files([{"path": str(fp), "name": "Test"}])
-        exchange, symbol, _, _ = next(iter(result))
+        exchange, symbol, _, _, _ = next(iter(result))
         assert exchange == "GATEIO"
         assert symbol == "ADA/USDT"
 
