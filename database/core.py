@@ -56,7 +56,7 @@ async def init_db():
     # Инициализация настроек по умолчанию
     await _ensure_default_settings()
 
-async def _ensure_default_settings():
+async def _ensure_default_settings(session_factory=None):
     """Проверяет наличие базовых настроек в БД и создает их, если нет."""
     from database.models import AppSettings
     from sqlalchemy import select
@@ -71,7 +71,8 @@ async def _ensure_default_settings():
         "watched_files"
     ]
     
-    async with get_session() as session:
+    factory = session_factory or get_session
+    async with factory() as session:
         for key in keys:
             stmt = select(AppSettings).where(AppSettings.key == key)
             existing = (await session.execute(stmt)).scalars().first()
