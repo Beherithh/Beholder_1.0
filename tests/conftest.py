@@ -15,6 +15,8 @@ from unittest.mock import patch
 from services.config import ConfigService
 from database.models import AppSettings
 
+from sqlalchemy.pool import StaticPool
+
 # --- Engine: in-memory SQLite для изоляции тестов ---
 TEST_DB_URL = "sqlite+aiosqlite://"
 
@@ -22,6 +24,7 @@ test_engine = create_async_engine(
     TEST_DB_URL,
     echo=False,
     connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
 )
 
 @pytest_asyncio.fixture(scope="function")
@@ -44,14 +47,19 @@ async def db_session():
         await conn.run_sync(SQLModel.metadata.drop_all)
 
 @pytest.fixture(scope="function")
-def session_factory(db_session: AsyncSession):
+def session_factory():
     """
     Фикстура, имитирующая database.core.get_session.
-    Возвращает контекстный менеджер, который всегда отдает ту же тестовую сессию.
+    Благодаря StaticPool каждый вызов получает свою собственную сессию,
+    но разделяет ту же in-memory БД (предотвращает гонки сессий).
     """
+    async_session = sessionmaker(
+        test_engine, class_=AsyncSession, expire_on_commit=False
+    )
     @asynccontextmanager
     async def _factory():
-        yield db_session
+        async with async_session() as session:
+            yield session
     return _factory
 
 @pytest.fixture(scope="function")
